@@ -50,6 +50,7 @@ from fastapi import Request
 
 
 @router.get("/{run_id}/stream")
+async def stream_run(run_id: str, request: Request, db: Session = Depends(get_db_session)):
     """Stream run execution events via Server-Sent Events."""
     run = db.query(RunModel).filter(RunModel.id == run_id).first()
     if not run:
