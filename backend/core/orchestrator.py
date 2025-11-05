@@ -8,6 +8,7 @@ from db.schemas import AgentModel, RunModel
 from core.models import RunLog
 from core.logging import get_logger
 from core.gemini_client import generate_text, generate_streaming
+from core.pipeline_registry import PipelineRegistry
 
 logger = get_logger("orchestrator")
 
@@ -45,7 +46,7 @@ class AgentOrchestrator:
         self.db.commit()
         
         try:
-            # Load agent graph
+            # Load agent graph (via registry for global awareness)
             graph = self._load_agent_graph(root_agent_id)
             
             yield {"type": "status", "agent_id": root_agent_id, "data": "running"}
@@ -170,6 +171,17 @@ class AgentOrchestrator:
                             parent_output = results.get(agent.parent_id, "")
                             # Include any child messages this parent has received
                             parent_messages = child_messages.get(agent.parent_id, [])
+                            # Relevance check: only execute child if relevant to current parent context
+                            # Use parent's output when available, otherwise fall back to original root input
+                            relevance_context = parent_output if parent_output else (input_data.get("prompt", "") if isinstance(input_data, dict) else str(input_data))
+                            if not self._is_child_relevant(agent.id, agent.parent_id, relevance_context):
+                                yield {
+                                    "type": "log",
+                                    "agent_id": agent_id,
+                                    "data": f"[SKIP] {agent.name} skipped - not relevant to parent context",
+                                }
+                                executed_agents.add(agent_id)
+                                continue
                             
                             # Log what we're getting from parent
                             parent_agent = graph.get(agent.parent_id)
@@ -462,15 +474,25 @@ class AgentOrchestrator:
                             "data": f"[DEBUG] {agent_name} output ({len(output)} chars):\n{output[:500]}...",
                         }
                         
-                        # Always stream root agent outputs (even in subsequent iterations)
+                        # Root-level pause-on-question: if the root asks the user, pause run
                         if level_num == 0:
+                            possible_question = self._extract_child_message(output)
+                            if possible_question:
+                                run.status = "awaiting_input"
+                                self.db.commit()
+                                yield {
+                                    "type": "await_user",
+                                    "agent_id": agent_id,
+                                    "data": possible_question,
+                                }
+                                return
+                            # Otherwise, stream root agent outputs
                             for chunk in chunks:
                                 yield {
                                     "type": "output_chunk",
                                     "agent_id": agent_id,
                                     "data": chunk,
                                 }
-                            
                             # Stream complete output (only for root agent)
                             yield {
                                 "type": "output",
@@ -594,18 +616,22 @@ class AgentOrchestrator:
     
     def _load_agent_graph(self, root_agent_id: str) -> Dict[str, AgentModel]:
         """Load entire agent graph starting from root."""
-        graph = {}
-        
-        # Load root agent
+        # Prefer global registry if available
+        try:
+            registry = PipelineRegistry.instance()
+            graph = registry.get_graph_from_root(root_agent_id)
+            if graph:
+                return graph
+        except Exception:
+            # Fallback to direct DB traversal if registry not initialized
+            pass
+
+        graph: Dict[str, AgentModel] = {}
         root = self.db.query(AgentModel).filter(AgentModel.id == root_agent_id).first()
         if not root:
             raise ValueError(f"Root agent {root_agent_id} not found")
-        
         graph[root_agent_id] = root
-        
-        # Recursively load children
         self._load_children(root_agent_id, graph)
-        
         return graph
     
     def _load_children(self, parent_id: str, graph: Dict[str, AgentModel]):
@@ -648,6 +674,16 @@ class AgentOrchestrator:
             current_level = next_level
         
         return levels
+
+    def _is_child_relevant(self, child_id: str, parent_id: Optional[str], context_text: str) -> bool:
+        """Use registry heuristics to decide if a child should execute."""
+        try:
+            registry = PipelineRegistry.instance()
+            relevant = registry.select_relevant_children(parent_id or "", context_text)
+            return child_id in relevant
+        except Exception:
+            # If registry not available, default to execute
+            return True
     
     def _prepare_root_input(self, root_input: Dict, child_messages: Optional[List[str]] = None) -> str:
         """Prepare input for root agent from user's injected prompt and child messages."""
@@ -708,6 +744,18 @@ class AgentOrchestrator:
                 messages_text = "\n\n".join(child_messages)
                 base_input += f"\n\n=== MESSAGES FROM YOUR CHILD AGENTS ===\n{messages_text}"
                 base_input += "\n\nPlease review these messages and respond appropriately."
+        
+        # Include any user clarifications captured on the run input
+        if isinstance(root_input, dict):
+            clarifications = root_input.get("clarifications") or []
+            try:
+                clar_text = "\n".join(
+                    f"- {c.get('text','')}" for c in clarifications if isinstance(c, dict)
+                )
+            except Exception:
+                clar_text = "\n".join(f"- {c}" for c in clarifications)
+            if clar_text.strip():
+                base_input += f"\n\n=== USER CLARIFICATIONS ===\n{clar_text}"
         
         return base_input
     

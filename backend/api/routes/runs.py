@@ -36,6 +36,32 @@ async def create_run(run_data: RunRequest, db: Session = Depends(get_db_session)
     return Run.model_validate(run)
 
 
+class ResumePayload(dict):
+    pass
+
+
+@router.post("/{run_id}/resume", response_model=Run)
+async def resume_run(run_id: str, payload: ResumePayload, db: Session = Depends(get_db_session)):
+    """Resume a paused run by appending a user clarification message.
+    Expects payload like { "message": "answer text" }
+    """
+    run = db.query(RunModel).filter(RunModel.id == run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    message = (payload or {}).get("message")
+    if not message or not isinstance(message, str):
+        raise HTTPException(status_code=400, detail="Missing 'message' string")
+    # Append to clarifications array in run.input
+    run.input = run.input or {}
+    clar = list(run.input.get("clarifications", []))
+    clar.append({"at": datetime.utcnow().isoformat(), "text": message})
+    run.input["clarifications"] = clar
+    run.status = "pending"
+    db.commit()
+    db.refresh(run)
+    return Run.model_validate(run)
+
+
 @router.get("/{run_id}", response_model=Run)
 async def get_run(run_id: str, db: Session = Depends(get_db_session)):
     """Get run status and details."""

@@ -7,6 +7,7 @@ from db.database import get_db_session
 from db.schemas import AgentModel, LinkModel
 from core.models import Agent, AgentCreate, AgentUpdate
 from core.logging import get_logger
+from core.pipeline_registry import PipelineRegistry
 
 logger = get_logger("agents")
 router = APIRouter(prefix="/agents", tags=["agents"])
@@ -38,6 +39,11 @@ async def create_agent(agent_data: AgentCreate, db: Session = Depends(get_db_ses
     db.commit()
     db.refresh(agent)
     logger.info("agent_created", agent_id=agent.id, name=agent.name)
+    # Refresh pipeline registry for system-wide awareness
+    try:
+        PipelineRegistry.instance().refresh(db)
+    except Exception:
+        pass
     return Agent.model_validate(agent)
 
 
@@ -75,6 +81,10 @@ async def update_agent(
     db.commit()
     db.refresh(agent)
     logger.info("agent_updated", agent_id=agent.id)
+    try:
+        PipelineRegistry.instance().refresh(db)
+    except Exception:
+        pass
     return Agent.model_validate(agent)
 
 
@@ -117,5 +127,9 @@ async def delete_agent(agent_id: str, db: Session = Depends(get_db_session)):
     db.commit()
     
     logger.info("agent_deleted", agent_id=agent_id, children_deleted=len(all_children))
+    try:
+        PipelineRegistry.instance().refresh(db)
+    except Exception:
+        pass
 
 

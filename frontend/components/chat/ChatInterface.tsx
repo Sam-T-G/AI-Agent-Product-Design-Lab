@@ -30,6 +30,11 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	const conversationHistoryRef = useRef<string[]>([]); // Track conversation for context
 	const previousAgentIdRef = useRef<string | undefined>(undefined);
 	const shouldClearChatRef = useRef(false);
+	// Typing animation
+	const typingQueueRef = useRef<string[]>([]);
+	const typingTimerRef = useRef<number | null>(null);
+	const typingTargetIdRef = useRef<string | null>(null);
+	const [typingSpeedMs] = useState<number>(12); // lower = faster
 
 	// Clear chat when agent changes - use ref flag to avoid React warning
 	useEffect(() => {
@@ -46,18 +51,21 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	useEffect(() => {
 		if (shouldClearChatRef.current) {
 			shouldClearChatRef.current = false;
-			setChatMessages([]);
-			setError(null);
-			setUploadedImages([]);
-			conversationHistoryRef.current = [];
-			currentStreamingMessageIdRef.current = null;
-			if (eventSourceRef.current) {
-				eventSourceRef.current.close();
-				eventSourceRef.current = null;
-			}
-			setIsRunning(false);
+			// Defer to avoid synchronous setState inside effect (linter rule)
+			setTimeout(() => {
+				setChatMessages([]);
+				setError(null);
+				setUploadedImages([]);
+				conversationHistoryRef.current = [];
+				currentStreamingMessageIdRef.current = null;
+				if (eventSourceRef.current) {
+					eventSourceRef.current.close();
+					eventSourceRef.current = null;
+				}
+				setIsRunning(false);
+			}, 0);
 		}
-	});
+	}, [activeAgentId]);
 
 	// Auto-scroll to bottom when messages change
 	useEffect(() => {
@@ -67,39 +75,60 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	// Handle streaming output chunks - build message incrementally
 	const handleStreamingChunk = useCallback(
 		(agentId: string, chunk: string) => {
+			const messageId = `agent-${agentId}-streaming`;
+			// Ensure a streaming message exists
 			setChatMessages((prev) => {
-				const messageId = `agent-${agentId}-streaming`;
-				const existingIndex = prev.findIndex((msg) => msg.id === messageId);
-
-				if (existingIndex >= 0) {
-					// Update existing streaming message
-					const updated = [...prev];
-					updated[existingIndex] = {
-						...updated[existingIndex],
-						content: updated[existingIndex].content + chunk,
-						timestamp: new Date(), // Update timestamp to show it's active
-					};
-					return updated;
-				} else {
-					// Create new streaming message
-					const agentName =
-						nodes.find((n) => n.id === agentId)?.data.agent.name || "Agent";
-					return [
-						...prev,
-						{
-							id: messageId,
-							type: "agent",
-							agentId: agentId,
-							agentName: agentName,
-							content: chunk,
-							timestamp: new Date(),
-						},
-					];
-				}
+				const existingIndex = prev.findIndex((m) => m.id === messageId);
+				if (existingIndex >= 0) return prev;
+				const agentName =
+					nodes.find((n) => n.id === agentId)?.data.agent.name || "Agent";
+				return [
+					...prev,
+					{
+						id: messageId,
+						type: "agent",
+						agentId,
+						agentName,
+						content: "",
+						timestamp: new Date(),
+					},
+				];
 			});
-			currentStreamingMessageIdRef.current = `agent-${agentId}-streaming`;
+			// Queue characters for typing animation
+			typingQueueRef.current.push(chunk);
+			typingTargetIdRef.current = messageId;
+			currentStreamingMessageIdRef.current = messageId;
+			// Start timer if not running
+			if (typingTimerRef.current === null) {
+				typingTimerRef.current = window.setInterval(() => {
+					const targetId = typingTargetIdRef.current;
+					if (!targetId) return;
+					const buffer = typingQueueRef.current;
+					if (buffer.length === 0) return; // nothing to type
+					// Take one character at a time from the head of the queue
+					let nextChar = "";
+					if (buffer[0].length > 0) {
+						nextChar = buffer[0].charAt(0);
+						buffer[0] = buffer[0].slice(1);
+					} else {
+						buffer.shift();
+						return;
+					}
+					setChatMessages((prev) => {
+						const idx = prev.findIndex((m) => m.id === targetId);
+						if (idx === -1) return prev;
+						const updated = [...prev];
+						updated[idx] = {
+							...updated[idx],
+							content: updated[idx].content + nextChar,
+							timestamp: new Date(),
+						};
+						return updated;
+					});
+				}, typingSpeedMs);
+			}
 		},
-		[nodes]
+		[nodes, typingSpeedMs]
 	);
 
 	// Handle final output - convert streaming message to final message
@@ -127,6 +156,13 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 				];
 			});
 			currentStreamingMessageIdRef.current = null;
+			// Stop typing timer and clear queue
+			if (typingTimerRef.current !== null) {
+				window.clearInterval(typingTimerRef.current);
+				typingTimerRef.current = null;
+			}
+			typingQueueRef.current = [];
+			typingTargetIdRef.current = null;
 			// Add to conversation history for context
 			conversationHistoryRef.current.push(fullOutput);
 		},
@@ -320,6 +356,10 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 		return () => {
 			if (eventSourceRef.current) {
 				eventSourceRef.current.close();
+			}
+			if (typingTimerRef.current !== null) {
+				window.clearInterval(typingTimerRef.current);
+				typingTimerRef.current = null;
 			}
 		};
 	}, []);
