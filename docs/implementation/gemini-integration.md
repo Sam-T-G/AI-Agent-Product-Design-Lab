@@ -44,7 +44,7 @@ def configure_gemini() -> None:
 def generate_text(
     system_prompt: str,
     user_input: str,
-    model: str = "gemini-1.5-pro",
+    model: str = "gemini-2.5-flash",
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
 ) -> str:
@@ -87,7 +87,7 @@ def generate_text(
 def generate_streaming(
     system_prompt: str,
     user_input: str,
-    model: str = "gemini-1.5-pro",
+    model: str = "gemini-2.5-flash",
     temperature: float = 0.7,
 ):
     """
@@ -120,9 +120,8 @@ def generate_streaming(
 
 ## Available Models
 
-- `gemini-1.5-pro`: Best for complex reasoning tasks
-- `gemini-1.5-flash`: Faster, good for simple tasks
-- `gemini-pro`: Legacy model (deprecated)
+- `gemini-2.5-pro`: Best for complex reasoning tasks (recommended for advanced use cases)
+- `gemini-2.5-flash`: Faster, cost-effective, good for most tasks (recommended default)
 
 ## Error Handling
 
@@ -134,7 +133,7 @@ from google.generativeai.types import GenerateContentResponse
 def safe_generate_text(
     system_prompt: str,
     user_input: str,
-    model: str = "gemini-1.5-pro",
+    model: str = "gemini-2.5-flash",
 ) -> tuple[str, Optional[str]]:
     """
     Safely generate text with error handling.
@@ -160,7 +159,7 @@ For multi-turn conversations, maintain chat history:
 def generate_with_history(
     system_prompt: str,
     messages: list[dict[str, str]],
-    model: str = "gemini-1.5-pro",
+    model: str = "gemini-2.5-flash",
 ) -> str:
     """Generate response with conversation history."""
     configure_gemini()
@@ -207,7 +206,7 @@ tools = [
 
 # Use with model
 model_client = genai.GenerativeModel(
-    model_name="gemini-1.5-pro",
+    model_name="gemini-2.5-flash",
     tools=tools,
 )
 ```

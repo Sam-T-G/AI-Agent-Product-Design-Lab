@@ -5,6 +5,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { AgentCanvas } from "@/components/canvas/AgentCanvas";
 import { AgentDrawer } from "@/components/drawer/AgentDrawer";
 import { ChatInterface } from "@/components/chat/ChatInterface";
+import { ApiKeyModal } from "@/components/modal/ApiKeyModal";
 import { listAgents, createAgent, deleteAgent, createLink, deleteLink, updateAgent } from "@/lib/api";
 import { useGraphStore } from "@/lib/store";
 import { Agent, AgentNode, AgentEdge, AgentCreate } from "@/lib/types";
@@ -14,6 +15,8 @@ export default function LabPage() {
   const { nodes, edges, setNodes, setEdges, selectedNodeId, setSelectedNode } = useGraphStore();
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [showApiKeyModal, setShowApiKeyModal] = useState(false);
+  const [hasApiKey, setHasApiKey] = useState(false);
 
   // Create agent mutation with optimistic update
   const createAgentMutation = useMutation({
@@ -180,9 +183,9 @@ export default function LabPage() {
   const prevAgentsRef = useRef<string>("");
   
   useEffect(() => {
-    // Create a simple hash of agent IDs and parent_ids to detect structure changes
+    // Hash includes display-impacting fields so updates reflect immediately
     const agentsHash = JSON.stringify(
-      agents.map(a => ({ id: a.id, parent_id: a.parent_id, pos_x: a.position_x, pos_y: a.position_y }))
+      agents.map(a => ({ id: a.id, parent_id: a.parent_id, pos_x: a.position_x, pos_y: a.position_y, name: a.name, role: a.role, updated_at: a.updated_at }))
     );
     
     if (agentsHash !== prevAgentsRef.current) {
@@ -191,6 +194,36 @@ export default function LabPage() {
       prevAgentsRef.current = agentsHash;
     }
   }, [agents, agentNodes, agentEdges, setNodes, setEdges]);
+
+  // Check for API key on mount
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const checkApiKey = () => {
+        try {
+          const apiKey = localStorage.getItem("GEMINI_API_KEY");
+          if (apiKey && apiKey.trim().length > 0) {
+            setHasApiKey(true);
+            setShowApiKeyModal(false);
+          } else {
+            setHasApiKey(false);
+            setShowApiKeyModal(true);
+          }
+        } catch {
+          setHasApiKey(false);
+          setShowApiKeyModal(true);
+        }
+      };
+      
+      checkApiKey();
+    }
+  }, []);
+
+
+  // Handle API key save
+  const handleApiKeySave = (apiKey: string) => {
+    setHasApiKey(true);
+    setShowApiKeyModal(false);
+  };
 
   // Handle node click
   const handleNodeClick = (nodeId: string) => {
@@ -219,7 +252,7 @@ export default function LabPage() {
       parameters: {
         temperature: 0.7,
         max_tokens: 1000,
-        model: "gemini-1.5-pro",
+        model: "gemini-2.5-flash",
       },
     };
 
@@ -269,6 +302,24 @@ export default function LabPage() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
+      {/* API Key Modal - Required on first load */}
+      <ApiKeyModal
+        isOpen={showApiKeyModal}
+        onSave={handleApiKeySave}
+      />
+
+      {/* Block UI if no API key */}
+      {!hasApiKey && (
+        <div className="absolute inset-0 z-[100] bg-gray-50 flex items-center justify-center">
+          <div className="text-center">
+            <p className="text-gray-600">Please enter your API key to continue</p>
+          </div>
+        </div>
+      )}
+
+      {/* Main Content - Only show if API key is set */}
+      {hasApiKey && (
+        <>
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-4 shadow-sm">
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
@@ -280,11 +331,22 @@ export default function LabPage() {
               Create, connect, and execute modular AI agents
             </p>
           </div>
-          {rootAgent && (
-            <div className="text-xs sm:text-sm text-gray-600">
-              <span className="font-medium">Root:</span> {rootAgent.name}
-            </div>
-          )}
+          <div className="flex items-center gap-3">
+            {rootAgent && (
+              <div className="text-xs sm:text-sm text-gray-600">
+                <span className="font-medium">Root:</span> {rootAgent.name}
+              </div>
+            )}
+            <button
+              onClick={() => {
+                setShowApiKeyModal(true);
+              }}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-gray-100 hover:bg-gray-200 transition-colors"
+              title="Change API Key"
+            >
+              {hasApiKey ? "Change API Key" : "Set API Key"}
+            </button>
+          </div>
         </div>
       </header>
 
@@ -292,15 +354,41 @@ export default function LabPage() {
       <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
         {/* Left Column - Agent Canvas */}
         <div className="flex-1 relative border-b lg:border-b-0 lg:border-r border-gray-200 bg-white min-h-[400px] lg:min-h-0">
-                  <AgentCanvas
+          <AgentCanvas
                     onNodeClick={handleNodeClick}
                     onAddAgent={handleAddAgent}
                     onDeleteAgent={handleDeleteAgent}
                     onConnect={(sourceId, targetId) => {
-                      createLinkMutation.mutate({
-                        parent_agent_id: sourceId,
-                        child_agent_id: targetId,
-                      });
+              const targetAgent = agents.find((a) => a.id === targetId);
+              if (!targetAgent) return;
+              // If already connected to this parent, no-op
+              if (targetAgent.parent_id === sourceId) return;
+              // Prevent cycles: if source is a descendant of target, abort
+              const isAncestor = (possibleAncestor: string, nodeId: string): boolean => {
+                let current = agents.find((a) => a.id === nodeId)?.parent_id;
+                const seen = new Set<string>();
+                while (current && !seen.has(current)) {
+                  if (current === possibleAncestor) return true;
+                  seen.add(current);
+                  current = agents.find((a) => a.id === current)?.parent_id || null;
+                }
+                return false;
+              };
+              if (isAncestor(targetId, sourceId)) {
+                console.warn("Prevented cycle: cannot connect", sourceId, "→", targetId);
+                return;
+              }
+              // If target already has a different parent, re-parent: delete old, then create new
+              if (targetAgent.parent_id && targetAgent.parent_id !== sourceId) {
+                deleteLinkMutation.mutate({
+                  parent_agent_id: targetAgent.parent_id,
+                  child_agent_id: targetId,
+                });
+              }
+              createLinkMutation.mutate({
+                parent_agent_id: sourceId,
+                child_agent_id: targetId,
+              });
                     }}
                     onDisconnect={(sourceId, targetId) => {
                       deleteLinkMutation.mutate({
@@ -357,6 +445,8 @@ export default function LabPage() {
           )}
         </div>
       </div>
+      </>
+      )}
     </div>
   );
 }

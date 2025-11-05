@@ -12,7 +12,7 @@ Create and run a multi-agent product workflow via a no-code canvas:
 
 - Agents: `ProductManager` (root), `Researcher`, `Designer` (children)
 - Tools: HTTP fetch (for web research)
-- Models: Gemini 1.5 Pro (default), temperature 0.7
+- Models: Gemini 2.5 Flash (default), temperature 0.7
 - Streaming: SSE
 
 ## API Endpoints (must exist)

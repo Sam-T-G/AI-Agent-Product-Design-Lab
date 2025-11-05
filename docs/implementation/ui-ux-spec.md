@@ -133,7 +133,7 @@ Slides in from right side (or bottom on mobile). Can be dismissed by clicking ou
 **4. Parameters**
 - Temperature: Slider (0-1) with value display
 - Max Tokens: Number input with presets
-- Model: Dropdown (gemini-1.5-pro, gemini-1.5-flash, etc.)
+- Model: Dropdown (gemini-2.5-flash, gemini-2.5-pro)
 - Safety Settings: Expandable section (future)
 
 **5. Relationships**

@@ -24,6 +24,8 @@ class AgentOrchestrator:
         run_id: str,
         root_agent_id: str,
         input_data: Dict,
+        api_key: Optional[str] = None,
+        images: Optional[List[str]] = None,
     ) -> AsyncGenerator[Dict, None]:
         """
         Execute a run from root agent.
@@ -70,6 +72,9 @@ class AgentOrchestrator:
             # Track which agents have been executed in this iteration
             executed_agents: Set[str] = set()
             
+            # Extract images from input_data if present
+            agent_images = images or input_data.get("images", []) if isinstance(input_data, dict) else []
+            
             # Execute hierarchically: root first, then each level of children
             # Get hierarchical levels (breadth-first traversal)
             levels = self._get_hierarchical_levels(graph, root_agent_id)
@@ -81,8 +86,10 @@ class AgentOrchestrator:
             }
             
             # Maximum iterations for bidirectional communication
-            max_iterations = 3
+            # Reduced to 2 to prevent excessive API calls
+            max_iterations = 2
             iteration = 0
+            previous_messages_hash = None  # Track if messages actually changed
             
             while iteration < max_iterations:
                 iteration += 1
@@ -125,6 +132,19 @@ class AgentOrchestrator:
                         
                         # Prepare input based on hierarchy and child messages
                         if level_num == 0:
+                            # Root agent - only re-execute if we have child messages (iteration > 1)
+                            if iteration > 1:
+                                # Only re-execute root if we have new child messages
+                                if not child_messages.get(root_agent_id):
+                                    yield {
+                                        "type": "log",
+                                        "agent_id": agent_id,
+                                        "data": f"[SKIP] Root agent {agent.name} skipping iteration {iteration} - no new child messages",
+                                    }
+                                    # Skip root execution in subsequent iterations if no child messages
+                                    executed_agents.add(agent_id)
+                                    continue
+                            
                             # Root agent - ensure it gets the initial user input
                             root_input = self._prepare_root_input(input_data, child_messages.get(root_agent_id))
                             agent_input = root_input
@@ -224,7 +244,14 @@ class AgentOrchestrator:
                         
                         try:
                             chunk_count = 0
-                            async for chunk in self._execute_agent_streaming(agent, agent_input):
+                            # Pass images only if agent has photo injection enabled
+                            agent_images_for_execution = []
+                            if hasattr(agent, 'photo_injection_enabled') and agent.photo_injection_enabled == "true" and agent_images:
+                                agent_images_for_execution = agent_images
+                            
+                            async for chunk in self._execute_agent_streaming(
+                                agent, agent_input, api_key=api_key, images=agent_images_for_execution if agent_images_for_execution else None
+                            ):
                                 output += chunk
                                 chunk_count += 1
                                 # Always stream root agent outputs to user (even in subsequent iterations)
@@ -306,6 +333,15 @@ class AgentOrchestrator:
                         
                         # Prepare input based on hierarchy and child messages
                         if level_num == 0:
+                            # For root agents, only execute if we have child messages (iteration > 1)
+                            if iteration > 1 and not child_messages.get(agent_id):
+                                # Return existing output without re-executing
+                                return {
+                                    "agent_id": agent_id,
+                                    "agent_name": agent.name,
+                                    "output": results.get(agent_id, ""),  # Return existing output
+                                    "chunks": [],
+                                }
                             agent_input = self._prepare_root_input(input_data, child_messages.get(agent_id))
                             # Log will be handled outside parallel execution
                         else:
@@ -332,7 +368,15 @@ class AgentOrchestrator:
                                 "output": "",
                                 "chunks": [],
                             }
-                        async for chunk in self._execute_agent_streaming(agent, agent_input):
+                        
+                        # Pass images only if agent has photo injection enabled
+                        agent_images_for_execution = []
+                        if hasattr(agent, 'photo_injection_enabled') and agent.photo_injection_enabled == "true" and agent_images:
+                            agent_images_for_execution = agent_images
+                        
+                        async for chunk in self._execute_agent_streaming(
+                            agent, agent_input, api_key=api_key, images=agent_images_for_execution if agent_images_for_execution else None
+                        ):
                             chunks.append(chunk)
                         
                         output = "".join(chunks)
@@ -349,7 +393,27 @@ class AgentOrchestrator:
                     
                     # Log inputs for parallel agents
                     if level_num == 0:
-                        for agent_id in level_agents:
+                        # For root agents in iteration > 1, filter out those without child messages
+                        agents_to_execute = level_agents
+                        if iteration > 1:
+                            agents_with_messages = [
+                                aid for aid in level_agents
+                                if child_messages.get(aid)
+                            ]
+                            if agents_with_messages:
+                                agents_to_execute = agents_with_messages
+                            else:
+                                yield {
+                                    "type": "log",
+                                    "agent_id": "",
+                                    "data": "[SKIP] Root agents skipping iteration - no new child messages",
+                                }
+                                # Skip parallel root execution
+                                for agent_id in level_agents:
+                                    executed_agents.add(agent_id)
+                                continue
+                        
+                        for agent_id in agents_to_execute:
                             agent = graph[agent_id]
                             agent_input = self._prepare_root_input(input_data, child_messages.get(agent_id))
                             yield {
@@ -357,6 +421,9 @@ class AgentOrchestrator:
                                 "agent_id": agent_id,
                                 "data": f"[DEBUG] Root agent input (iteration {iteration}):\n{agent_input[:500]}...",
                             }
+                        
+                        # Update level_agents to only include agents that should execute
+                        level_agents = agents_to_execute
                     else:
                         for agent_id in level_agents:
                             agent = graph[agent_id]
@@ -437,6 +504,12 @@ class AgentOrchestrator:
                         graph, levels, results, executed_agents
                     )
                     
+                    # Create hash of messages to detect if they actually changed
+                    import hashlib
+                    messages_hash = hashlib.md5(
+                        str(sorted(new_messages.items())).encode()
+                    ).hexdigest() if new_messages else None
+                    
                     # Log collected messages
                     if new_messages:
                         for parent_id, messages in new_messages.items():
@@ -454,9 +527,20 @@ class AgentOrchestrator:
                             "data": "[DEBUG] No child messages collected - ending communication cycles",
                         }
                     
-                    # If no new messages, we can stop iterating
+                    # If no new messages OR messages haven't changed, stop iterating
                     if not new_messages:
                         break
+                    
+                    # Check if messages are the same as previous iteration (prevent infinite loops)
+                    if messages_hash == previous_messages_hash:
+                        yield {
+                            "type": "log",
+                            "agent_id": "",
+                            "data": "[DEBUG] Messages unchanged from previous iteration - ending to prevent loops",
+                        }
+                        break
+                    
+                    previous_messages_hash = messages_hash
                     
                     # Merge new messages into child_messages
                     for parent_id, messages in new_messages.items():
@@ -801,6 +885,8 @@ class AgentOrchestrator:
         self,
         agent: AgentModel,
         input_data: str,
+        api_key: Optional[str] = None,
+        images: Optional[List[str]] = None,
     ) -> AsyncGenerator[str, None]:
         """Execute agent with streaming output using Gemini."""
         # Get model and parameters from agent
@@ -810,9 +896,12 @@ class AgentOrchestrator:
         
         # Migrate old model names to new ones
         model_migration = {
-            "gemini-1.5-pro": "gemini-2.5-flash",
-            "gemini-1.0-pro": "gemini-2.5-flash",
-            "gemini-pro": "gemini-2.5-flash",
+            "gemini-1.5-pro": "gemini-2.5-pro",
+            "gemini-1.5-flash": "gemini-2.5-flash",
+            "gemini-1.0-pro": "gemini-2.5-pro",
+            "gemini-pro": "gemini-2.5-pro",
+            "gemini-2.0-flash": "gemini-2.5-flash",
+            "gemini-2.0-flash-exp": "gemini-2.5-flash",
         }
         if model in model_migration:
             logger.warning(
@@ -838,6 +927,8 @@ class AgentOrchestrator:
             user_input=context,
             model=model,
             temperature=temperature,
+            api_key=api_key,
+            images=images if images else None,
         ):
             yield chunk
     
@@ -958,6 +1049,18 @@ class AgentOrchestrator:
     def _build_context(self, agent: AgentModel, input_data: str) -> str:
         """Build context string for agent execution."""
         context = f"Input: {input_data}"
+        
+        # Add photo injection capabilities if enabled
+        if hasattr(agent, 'photo_injection_enabled') and agent.photo_injection_enabled == "true":
+            context += "\n\n=== PHOTO INJECTION CAPABILITIES ==="
+            context += "\nYou have been configured to accept and process images. Users can upload photos directly to you."
+            if hasattr(agent, 'photo_injection_features') and agent.photo_injection_features:
+                features_text = ", ".join(agent.photo_injection_features)
+                context += f"\nYour custom photo processing features: {features_text}"
+                context += "\nUse these capabilities to analyze images and provide insights based on your configured features."
+            else:
+                context += "\nYou can analyze images, extract information, identify objects, read text, and provide detailed visual analysis."
+            context += "\nWhen images are provided, they will be included along with the text prompt."
         
         # Add information about child agents if this agent has children
         children = self.db.query(AgentModel).filter(

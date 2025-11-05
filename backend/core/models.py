@@ -1,5 +1,5 @@
 """Pydantic models for API requests/responses."""
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator, model_validator
 from typing import List, Optional, Dict, Any
 from datetime import datetime
 
@@ -17,6 +17,8 @@ class AgentBase(BaseModel):
     system_prompt: str
     tools: List[ToolConfig] = Field(default_factory=list)
     parameters: Dict[str, Any] = Field(default_factory=dict)
+    photo_injection_enabled: bool = False
+    photo_injection_features: List[str] = Field(default_factory=list)  # e.g., ["object_detection", "text_extraction", "style_analysis"]
 
 
 class AgentCreate(AgentBase):
@@ -33,6 +35,8 @@ class AgentUpdate(BaseModel):
     system_prompt: Optional[str] = None
     tools: Optional[List[ToolConfig]] = None
     parameters: Optional[Dict[str, Any]] = None
+    photo_injection_enabled: Optional[bool] = None
+    photo_injection_features: Optional[List[str]] = None
     parent_id: Optional[str] = None
     position_x: Optional[float] = None
     position_y: Optional[float] = None
@@ -46,6 +50,17 @@ class Agent(AgentBase):
     position_y: Optional[float] = None
     created_at: datetime
     updated_at: datetime
+    
+    @model_validator(mode='before')
+    @classmethod
+    def convert_photo_injection_enabled(cls, data: Any) -> Any:
+        """Convert photo_injection_enabled from string to bool when loading from DB."""
+        if isinstance(data, dict):
+            if 'photo_injection_enabled' in data:
+                val = data['photo_injection_enabled']
+                if isinstance(val, str):
+                    data['photo_injection_enabled'] = val.lower() == "true"
+        return data
     
     model_config = {
         "from_attributes": True,
@@ -74,6 +89,7 @@ class RunRequest(BaseModel):
     """Request model for executing a run."""
     root_agent_id: str
     input: Dict[str, Any] = Field(default_factory=dict)
+    images: Optional[List[str]] = None  # List of base64-encoded image strings
 
 
 class RunLog(BaseModel):

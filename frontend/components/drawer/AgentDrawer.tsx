@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { Agent, AgentCreate } from "@/lib/types";
 import { updateAgent, createAgent } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
@@ -27,6 +27,7 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
     },
   });
   const [isSaving, setIsSaving] = useState(false);
+  const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const [showDeleteModal, setShowDeleteModal] = useState(false);
 
   useEffect(() => {
@@ -38,11 +39,39 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
         parameters: agent.parameters || {
           temperature: 0.7,
           max_tokens: 1000,
-          model: "gemini-1.5-pro",
+          model: "gemini-2.5-flash",
         },
+        photo_injection_enabled: agent.photo_injection_enabled ?? false,
+        photo_injection_features: agent.photo_injection_features || [],
       });
     }
   }, [agent]);
+
+  // Autosave with debounce when formData changes
+  // Only autosave if formData actually changed (not just on mount)
+  const previousFormDataRef = useRef<string>("");
+  useEffect(() => {
+    if (!agent) return;
+    
+    // Skip if formData hasn't actually changed (avoid saving on initial mount)
+    const formDataStr = JSON.stringify(formData);
+    if (formDataStr === previousFormDataRef.current) {
+      return;
+    }
+    previousFormDataRef.current = formDataStr;
+    
+    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    debounceTimerRef.current = setTimeout(async () => {
+      try {
+        await updateAgent(agent.id, formData);
+      } catch (e) {
+        console.error("Autosave failed:", e);
+      }
+    }, 1000); // Increased debounce to 1 second to reduce API calls
+    return () => {
+      if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
+    };
+  }, [agent?.id, formData]);
 
   const handleSave = async () => {
     if (!agent) return;
@@ -217,11 +246,65 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
             >
               <option value="gemini-2.5-flash">Gemini 2.5 Flash (Recommended)</option>
               <option value="gemini-2.5-pro">Gemini 2.5 Pro</option>
-              <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-              <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
-              <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
             </select>
           </div>
+        </div>
+
+        {/* Photo Injection Configuration */}
+        <div className="space-y-3 border-t border-gray-200 pt-4">
+          <label className="block text-sm font-medium text-gray-700">
+            Photo Injection
+          </label>
+          <p className="text-xs text-gray-600 mb-3">
+            Enable this agent to accept and process images. Students can upload photos directly when prompting this agent.
+          </p>
+          
+          {/* Enable Photo Injection */}
+          <div className="flex items-center gap-2">
+            <input
+              type="checkbox"
+              id="photo-injection-enabled"
+              checked={formData.photo_injection_enabled || false}
+              onChange={(e) =>
+                setFormData({
+                  ...formData,
+                  photo_injection_enabled: e.target.checked,
+                })
+              }
+              className="w-4 h-4 text-blue-600 border-gray-300 rounded focus:ring-blue-500"
+            />
+            <label htmlFor="photo-injection-enabled" className="text-sm text-gray-700">
+              Enable photo injection for this agent
+            </label>
+          </div>
+
+          {/* Custom Features */}
+          {formData.photo_injection_enabled && (
+            <div>
+              <label className="block text-xs text-gray-800 mb-2">
+                Custom Features (comma-separated)
+              </label>
+              <input
+                type="text"
+                value={(formData.photo_injection_features || []).join(", ")}
+                onChange={(e) => {
+                  const features = e.target.value
+                    .split(",")
+                    .map((f) => f.trim())
+                    .filter((f) => f.length > 0);
+                  setFormData({
+                    ...formData,
+                    photo_injection_features: features,
+                  });
+                }}
+                placeholder="e.g., object_detection, text_extraction, style_analysis"
+                className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm text-gray-900 placeholder:text-gray-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Define custom capabilities for this photo-injection agent. These will be included in the system prompt.
+              </p>
+            </div>
+          )}
         </div>
       </div>
 

@@ -23,6 +23,8 @@ class AgentModel(Base):
     system_prompt = Column(Text, nullable=False)
     tools = Column(JSON, default=list)
     parameters = Column(JSON, default=dict)
+    photo_injection_enabled = Column(String, default="false")  # "true" or "false" as string for JSON compatibility
+    photo_injection_features = Column(JSON, default=list)  # List of custom features/capabilities
     parent_id = Column(String, ForeignKey("agents.id"), nullable=True)
     position_x = Column(Float, nullable=True)
     position_y = Column(Float, nullable=True)

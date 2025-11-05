@@ -28,6 +28,8 @@ async def create_agent(agent_data: AgentCreate, db: Session = Depends(get_db_ses
         system_prompt=agent_data.system_prompt,
         tools=[tool.model_dump() for tool in agent_data.tools],
         parameters=agent_data.parameters,
+        photo_injection_enabled="true" if agent_data.photo_injection_enabled else "false",
+        photo_injection_features=agent_data.photo_injection_features or [],
         parent_id=agent_data.parent_id,
         position_x=agent_data.position_x,
         position_y=agent_data.position_y,
@@ -62,6 +64,10 @@ async def update_agent(
     update_data = agent_data.model_dump(exclude_unset=True)
     if "tools" in update_data:
         update_data["tools"] = [tool.model_dump() if isinstance(tool, dict) else tool for tool in update_data["tools"]]
+    
+    # Convert photo_injection_enabled bool to string for database
+    if "photo_injection_enabled" in update_data:
+        update_data["photo_injection_enabled"] = "true" if update_data["photo_injection_enabled"] else "false"
     
     for key, value in update_data.items():
         setattr(agent, key, value)

@@ -12,6 +12,8 @@ export interface Agent {
   system_prompt: string;
   tools: ToolConfig[];
   parameters: Record<string, any>;
+  photo_injection_enabled: boolean;
+  photo_injection_features: string[];
   parent_id: string | null;
   position_x: number | null;
   position_y: number | null;
@@ -25,6 +27,8 @@ export interface AgentCreate {
   system_prompt: string;
   tools?: ToolConfig[];
   parameters?: Record<string, any>;
+  photo_injection_enabled?: boolean;
+  photo_injection_features?: string[];
   parent_id?: string | null;
   position_x?: number | null;
   position_y?: number | null;
@@ -63,6 +67,7 @@ export interface Run {
 export interface RunRequest {
   root_agent_id: string;
   input: Record<string, any>;
+  images?: string[]; // Base64-encoded image strings
 }
 
 // React Flow types

@@ -9,11 +9,12 @@ from core.logging import get_logger
 logger = get_logger("gemini")
 
 
-def configure_gemini() -> None:
+def configure_gemini(api_key: Optional[str] = None) -> None:
     """Configure Gemini API with API key from settings."""
-    if not settings.gemini_api_key:
+    key = api_key or settings.gemini_api_key
+    if not key:
         raise ValueError("GEMINI_API_KEY not set in environment")
-    genai.configure(api_key=settings.gemini_api_key)
+    genai.configure(api_key=key)
 
 
 async def generate_text(
@@ -22,6 +23,7 @@ async def generate_text(
     model: str = "gemini-2.5-flash",
     temperature: float = 0.7,
     max_tokens: Optional[int] = None,
+    api_key: Optional[str] = None,
 ) -> str:
     """
     Generate text using Gemini API.
@@ -36,7 +38,7 @@ async def generate_text(
     Returns:
         Generated text response
     """
-    configure_gemini()
+    configure_gemini(api_key)
     
     # Create model with configuration
     generation_config = {
@@ -69,28 +71,73 @@ async def generate_streaming(
     user_input: str,
     model: str = "gemini-2.5-flash",
     temperature: float = 0.7,
+    api_key: Optional[str] = None,
+    images: Optional[list[str]] = None,
 ) -> AsyncGenerator[str, None]:
     """
     Generate text with streaming support.
     
+    Args:
+        system_prompt: System prompt defining agent behavior
+        user_input: User input/message
+        model: Gemini model to use (must support vision for images)
+        temperature: Sampling temperature (0-1)
+        api_key: Optional API key override
+        images: Optional list of base64-encoded image strings
+    
     Yields chunks of text as they're generated.
     """
-    configure_gemini()
+    configure_gemini(api_key)
     
     generation_config = {
         "temperature": temperature,
     }
-    
+
     try:
+        # Use vision-capable model if images are provided
+        # Both gemini-2.5-pro and gemini-2.5-flash support vision
+        if images and model not in ["gemini-2.5-pro", "gemini-2.5-flash"]:
+            # Switch to a vision-capable model (both 2.5 models support vision)
+            if "flash" in model.lower():
+                model = "gemini-2.5-flash"
+            else:
+                model = "gemini-2.5-pro"
+
         model_client = genai.GenerativeModel(
             model_name=model,
             generation_config=generation_config,
         )
         
-        full_prompt = f"{system_prompt}\n\nUser: {user_input}\n\nAssistant:"
+        # Prepare content: text + images
+        import base64
+        import io
+        from PIL import Image
         
+        content_parts = []
+        
+        # Add images if provided
+        if images:
+            for img_base64 in images:
+                try:
+                    # Remove data URL prefix if present
+                    if "," in img_base64:
+                        img_base64 = img_base64.split(",")[1]
+                    
+                    # Decode base64 to image
+                    img_data = base64.b64decode(img_base64)
+                    img = Image.open(io.BytesIO(img_data))
+                    content_parts.append(img)
+                except Exception as e:
+                    logger.warning("failed_to_process_image", error=str(e))
+                    # Continue with other images
+        
+        # Add text prompt
+        full_prompt = f"{system_prompt}\n\nUser: {user_input}\n\nAssistant:"
+        content_parts.append(full_prompt)
+        
+        # Generate with streaming
         response = model_client.generate_content(
-            full_prompt,
+            content_parts,
             stream=True,
         )
         

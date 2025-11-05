@@ -196,7 +196,7 @@ class AgentOrchestrator:
         output = generate_text(
             system_prompt=agent.system_prompt,
             user_input=context,
-            model=agent.parameters.get("model", "gemini-1.5-pro"),
+            model=agent.parameters.get("model", "gemini-2.5-flash"),
             temperature=agent.parameters.get("temperature", 0.7),
             max_tokens=agent.parameters.get("max_tokens"),
         )
@@ -214,7 +214,7 @@ class AgentOrchestrator:
         for chunk in generate_streaming(
             system_prompt=agent.system_prompt,
             user_input=context,
-            model=agent.parameters.get("model", "gemini-1.5-pro"),
+            model=agent.parameters.get("model", "gemini-2.5-flash"),
             temperature=agent.parameters.get("temperature", 0.7),
         ):
             yield chunk
