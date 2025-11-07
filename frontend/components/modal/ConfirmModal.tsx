@@ -29,7 +29,7 @@ export function ConfirmModal({
       : "bg-blue-600 hover:bg-blue-700 text-white";
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+    <div className="fixed inset-0 z-[250] flex items-center justify-center p-4">
       {/* Backdrop */}
       <div
         className="absolute inset-0 bg-black bg-opacity-50 backdrop-blur-sm transition-opacity"

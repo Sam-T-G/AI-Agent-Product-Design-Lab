@@ -1,8 +1,68 @@
 /** API client for backend communication. */
-const API_BASE =
-	process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000/api";
+// Use relative "/api" so the frontend can proxy to the backend at a single public URL
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "/api";
 
-import { Agent, AgentCreate, Link, LinkCreate, Run, RunRequest } from "./types";
+import {
+	Agent,
+	AgentCreate,
+	Link,
+	LinkCreate,
+	Run,
+	RunRequest,
+	Session,
+	SessionCreate,
+} from "./types";
+
+// Helper to get session_id from localStorage
+function getSessionId(): string | null {
+	try {
+		return typeof window !== "undefined"
+			? localStorage.getItem("SESSION_ID")
+			: null;
+	} catch {
+		return null;
+	}
+}
+
+// Helper to build query string with session_id
+function withSession(query: Record<string, string> = {}): string {
+	const sessionId = getSessionId();
+	const params = new URLSearchParams({
+		...query,
+		...(sessionId ? { session_id: sessionId } : {}),
+	});
+	return params.toString();
+}
+
+// Sessions
+export async function listSessions(): Promise<Session[]> {
+	const res = await fetch(`${API_BASE}/sessions`);
+	if (!res.ok) throw new Error(`Failed to list sessions: ${res.statusText}`);
+	return res.json();
+}
+
+export async function createSession(data: SessionCreate): Promise<Session> {
+	const res = await fetch(`${API_BASE}/sessions`, {
+		method: "POST",
+		headers: authHeaders(),
+		body: JSON.stringify(data),
+	});
+	if (!res.ok) throw new Error(`Failed to create session: ${res.statusText}`);
+	return res.json();
+}
+
+export async function getSession(id: string): Promise<Session> {
+	const res = await fetch(`${API_BASE}/sessions/${id}`);
+	if (!res.ok) throw new Error(`Failed to get session: ${res.statusText}`);
+	return res.json();
+}
+
+export async function deleteSession(id: string): Promise<void> {
+	const res = await fetch(`${API_BASE}/sessions/${id}`, {
+		method: "DELETE",
+	});
+	if (!res.ok) throw new Error(`Failed to delete session: ${res.statusText}`);
+}
 
 function authHeaders() {
 	const headers: Record<string, string> = {
@@ -19,14 +79,21 @@ function authHeaders() {
 }
 
 // Agents
-export async function listAgents(): Promise<Agent[]> {
-	const res = await fetch(`${API_BASE}/agents`);
+export async function listAgents(sessionId?: string): Promise<Agent[]> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/agents?${withSession()}`);
 	if (!res.ok) throw new Error(`Failed to list agents: ${res.statusText}`);
 	return res.json();
 }
 
-export async function createAgent(data: AgentCreate): Promise<Agent> {
-	const res = await fetch(`${API_BASE}/agents`, {
+export async function createAgent(
+	data: AgentCreate,
+	sessionId?: string
+): Promise<Agent> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/agents?${withSession()}`, {
 		method: "POST",
 		headers: authHeaders(),
 		body: JSON.stringify(data),
@@ -35,35 +102,78 @@ export async function createAgent(data: AgentCreate): Promise<Agent> {
 	return res.json();
 }
 
-export async function getAgent(id: string): Promise<Agent> {
-	const res = await fetch(`${API_BASE}/agents/${id}`);
+export async function getAgent(id: string, sessionId?: string): Promise<Agent> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/agents/${id}?${withSession()}`);
 	if (!res.ok) throw new Error(`Failed to get agent: ${res.statusText}`);
 	return res.json();
 }
 
 export async function updateAgent(
 	id: string,
-	data: Partial<AgentCreate>
+	data: Partial<AgentCreate>,
+	sessionId?: string
 ): Promise<Agent> {
-	const res = await fetch(`${API_BASE}/agents/${id}`, {
-		method: "PUT",
-		headers: authHeaders(),
-		body: JSON.stringify(data),
-	});
-	if (!res.ok) throw new Error(`Failed to update agent: ${res.statusText}`);
-	return res.json();
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+
+	try {
+		const res = await fetch(`${API_BASE}/agents/${id}?${withSession()}`, {
+			method: "PUT",
+			headers: authHeaders(),
+			body: JSON.stringify(data),
+		});
+
+		if (!res.ok) {
+			const errorText = await res.text();
+			let errorMessage = `Failed to update agent: ${res.statusText}`;
+			try {
+				const errorJson = JSON.parse(errorText);
+				if (errorJson.detail) {
+					errorMessage = `Failed to update agent: ${errorJson.detail}`;
+				}
+			} catch {
+				// Use default error message
+			}
+			throw new Error(errorMessage);
+		}
+
+		return res.json();
+	} catch (err) {
+		if (err instanceof Error) {
+			// Re-throw with more context
+			if (err.message.includes("fetch") || err.message.includes("network")) {
+				throw new Error(
+					"Network error: Please check your connection and try again"
+				);
+			}
+			throw err;
+		}
+		throw new Error("Failed to update agent: Unknown error");
+	}
 }
 
-export async function deleteAgent(id: string): Promise<void> {
-	const res = await fetch(`${API_BASE}/agents/${id}`, {
+export async function deleteAgent(
+	id: string,
+	sessionId?: string
+): Promise<void> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/agents/${id}?${withSession()}`, {
 		method: "DELETE",
 	});
 	if (!res.ok) throw new Error(`Failed to delete agent: ${res.statusText}`);
 }
 
 // Links
-export async function createLink(data: LinkCreate): Promise<Link> {
-	const res = await fetch(`${API_BASE}/links`, {
+export async function createLink(
+	data: LinkCreate,
+	sessionId?: string
+): Promise<Link> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/links?${withSession()}`, {
 		method: "POST",
 		headers: authHeaders(),
 		body: JSON.stringify(data),
@@ -82,8 +192,13 @@ export async function createLink(data: LinkCreate): Promise<Link> {
 	return res.json();
 }
 
-export async function deleteLink(data: LinkCreate): Promise<void> {
-	const res = await fetch(`${API_BASE}/links`, {
+export async function deleteLink(
+	data: LinkCreate,
+	sessionId?: string
+): Promise<void> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/links?${withSession()}`, {
 		method: "DELETE",
 		headers: authHeaders(),
 		body: JSON.stringify(data),
@@ -92,8 +207,13 @@ export async function deleteLink(data: LinkCreate): Promise<void> {
 }
 
 // Runs
-export async function createRun(data: RunRequest): Promise<Run> {
-	const res = await fetch(`${API_BASE}/runs`, {
+export async function createRun(
+	data: RunRequest,
+	sessionId?: string
+): Promise<Run> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/runs?${withSession()}`, {
 		method: "POST",
 		headers: authHeaders(),
 		body: JSON.stringify(data),
@@ -102,8 +222,10 @@ export async function createRun(data: RunRequest): Promise<Run> {
 	return res.json();
 }
 
-export async function getRun(id: string): Promise<Run> {
-	const res = await fetch(`${API_BASE}/runs/${id}`);
+export async function getRun(id: string, sessionId?: string): Promise<Run> {
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+	const res = await fetch(`${API_BASE}/runs/${id}?${withSession()}`);
 	if (!res.ok) throw new Error(`Failed to get run: ${res.statusText}`);
 	return res.json();
 }
@@ -111,9 +233,24 @@ export async function getRun(id: string): Promise<Run> {
 // SSE helper for streaming runs
 export function streamRun(
 	runId: string,
-	onEvent: (event: any) => void
+	onEvent: (event: { type: string; agent_id?: string; data?: unknown }) => void,
+	sessionId?: string
 ): EventSource {
-	const eventSource = new EventSource(`${API_BASE}/runs/${runId}/stream`);
+	const sid = sessionId || getSessionId();
+	if (!sid) throw new Error("Session ID is required");
+
+	// EventSource doesn't support custom headers; include API key via query param
+	let url = `${API_BASE}/runs/${runId}/stream?${withSession()}`;
+	try {
+		const key =
+			typeof window !== "undefined"
+				? localStorage.getItem("GEMINI_API_KEY")
+				: null;
+		if (key) {
+			url = `${url}&api_key=${encodeURIComponent(key)}`;
+		}
+	} catch {}
+	const eventSource = new EventSource(url);
 
 	eventSource.addEventListener("connected", (e: MessageEvent) => {
 		try {

@@ -17,7 +17,7 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	const [isRunning, setIsRunning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [input, setInput] = useState<string>("");
-	const [showInternal, setShowInternal] = useState(false);
+	const [showInternal, setShowInternal] = useState(true); // Default to true to show all agent outputs
 	const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
 	const [uploadedImages, setUploadedImages] = useState<
 		Array<{ file: File; preview: string }>
@@ -30,11 +30,9 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	const conversationHistoryRef = useRef<string[]>([]); // Track conversation for context
 	const previousAgentIdRef = useRef<string | undefined>(undefined);
 	const shouldClearChatRef = useRef(false);
-	// Typing animation
-	const typingQueueRef = useRef<string[]>([]);
-	const typingTimerRef = useRef<number | null>(null);
-	const typingTargetIdRef = useRef<string | null>(null);
-	const [typingSpeedMs] = useState<number>(12); // lower = faster
+	const messageIdCounterRef = useRef(0); // Unique counter for message IDs
+	const finalizedAgentsRef = useRef<Set<string>>(new Set()); // Track finalized agents to prevent duplicates
+	const accumulatedOutputByAgentRef = useRef<Map<string, string>>(new Map()); // Track accumulated output per agent
 
 	// Clear chat when agent changes - use ref flag to avoid React warning
 	useEffect(() => {
@@ -51,21 +49,19 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	useEffect(() => {
 		if (shouldClearChatRef.current) {
 			shouldClearChatRef.current = false;
-			// Defer to avoid synchronous setState inside effect (linter rule)
-			setTimeout(() => {
-				setChatMessages([]);
-				setError(null);
-				setUploadedImages([]);
-				conversationHistoryRef.current = [];
-				currentStreamingMessageIdRef.current = null;
-				if (eventSourceRef.current) {
-					eventSourceRef.current.close();
-					eventSourceRef.current = null;
-				}
-				setIsRunning(false);
-			}, 0);
+			setChatMessages([]);
+			setError(null);
+			setUploadedImages([]);
+			conversationHistoryRef.current = [];
+			currentStreamingMessageIdRef.current = null;
+			finalizedAgentsRef.current.clear(); // Clear finalized agents tracking
+			if (eventSourceRef.current) {
+				eventSourceRef.current.close();
+				eventSourceRef.current = null;
+			}
+			setIsRunning(false);
 		}
-	}, [activeAgentId]);
+	}, []); // Intentionally empty - only runs when flag is set
 
 	// Auto-scroll to bottom when messages change
 	useEffect(() => {
@@ -75,71 +71,76 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	// Handle streaming output chunks - build message incrementally
 	const handleStreamingChunk = useCallback(
 		(agentId: string, chunk: string) => {
-			const messageId = `agent-${agentId}-streaming`;
-			// Ensure a streaming message exists
 			setChatMessages((prev) => {
-				const existingIndex = prev.findIndex((m) => m.id === messageId);
-				if (existingIndex >= 0) return prev;
-				const agentName =
-					nodes.find((n) => n.id === agentId)?.data.agent.name || "Agent";
-				return [
-					...prev,
-					{
-						id: messageId,
-						type: "agent",
-						agentId,
-						agentName,
-						content: "",
-						timestamp: new Date(),
-					},
-				];
-			});
-			// Queue characters for typing animation
-			typingQueueRef.current.push(chunk);
-			typingTargetIdRef.current = messageId;
-			currentStreamingMessageIdRef.current = messageId;
-			// Start timer if not running
-			if (typingTimerRef.current === null) {
-				typingTimerRef.current = window.setInterval(() => {
-					const targetId = typingTargetIdRef.current;
-					if (!targetId) return;
-					const buffer = typingQueueRef.current;
-					if (buffer.length === 0) return; // nothing to type
-					// Take one character at a time from the head of the queue
-					let nextChar = "";
-					if (buffer[0].length > 0) {
-						nextChar = buffer[0].charAt(0);
-						buffer[0] = buffer[0].slice(1);
-					} else {
-						buffer.shift();
-						return;
-					}
-					setChatMessages((prev) => {
-						const idx = prev.findIndex((m) => m.id === targetId);
-						if (idx === -1) return prev;
-						const updated = [...prev];
-						updated[idx] = {
-							...updated[idx],
-							content: updated[idx].content + nextChar,
+				const messageId = `agent-${agentId}-streaming`;
+				const existingIndex = prev.findIndex((msg) => msg.id === messageId);
+
+				if (existingIndex >= 0) {
+					// Update existing streaming message
+					const updated = [...prev];
+					updated[existingIndex] = {
+						...updated[existingIndex],
+						content: updated[existingIndex].content + chunk,
+						timestamp: new Date(), // Update timestamp to show it's active
+					};
+					return updated;
+				} else {
+					// Create new streaming message
+					const agentName =
+						nodes.find((n) => n.id === agentId)?.data.agent.name || "Agent";
+					return [
+						...prev,
+						{
+							id: messageId,
+							type: "agent",
+							agentId: agentId,
+							agentName: agentName,
+							content: chunk,
 							timestamp: new Date(),
-						};
-						return updated;
-					});
-				}, typingSpeedMs);
-			}
+						},
+					];
+				}
+			});
+			currentStreamingMessageIdRef.current = `agent-${agentId}-streaming`;
 		},
-		[nodes, typingSpeedMs]
+		[nodes]
 	);
 
 	// Handle final output - convert streaming message to final message
 	const handleFinalOutput = useCallback(
 		(agentId: string, fullOutput: string) => {
+			// Create a content hash for better duplicate detection
+			const contentHash = fullOutput.slice(0, 50) + fullOutput.length;
+			const finalizationKey = `${agentId}-${contentHash}`;
+
+			// Prevent duplicate finalizations for the same agent + content
+			if (finalizedAgentsRef.current.has(finalizationKey)) {
+				return; // Already finalized this exact output
+			}
+			finalizedAgentsRef.current.add(finalizationKey);
+
 			setChatMessages((prev) => {
 				const streamingId = `agent-${agentId}-streaming`;
-				const finalId = `agent-${agentId}-${Date.now()}`;
+				// Use counter + timestamp for truly unique IDs
+				messageIdCounterRef.current += 1;
+				const finalId = `agent-${agentId}-${Date.now()}-${
+					messageIdCounterRef.current
+				}`;
 
 				// Remove streaming message and add final message
 				const filtered = prev.filter((msg) => msg.id !== streamingId);
+
+				// Check if final message already exists with same content (double-check)
+				const alreadyExists = filtered.some(
+					(msg) =>
+						msg.agentId === agentId &&
+						msg.content === fullOutput &&
+						msg.type === "agent"
+				);
+				if (alreadyExists) {
+					return filtered; // Don't add duplicate
+				}
+
 				const agentName =
 					nodes.find((n) => n.id === agentId)?.data.agent.name || "Agent";
 
@@ -155,31 +156,52 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 					},
 				];
 			});
-			currentStreamingMessageIdRef.current = null;
-			// Stop typing timer and clear queue
-			if (typingTimerRef.current !== null) {
-				window.clearInterval(typingTimerRef.current);
-				typingTimerRef.current = null;
+
+			// Clear streaming message ref if this was the active one
+			if (
+				currentStreamingMessageIdRef.current === `agent-${agentId}-streaming`
+			) {
+				currentStreamingMessageIdRef.current = null;
 			}
-			typingQueueRef.current = [];
-			typingTargetIdRef.current = null;
-			// Add to conversation history for context
-			conversationHistoryRef.current.push(fullOutput);
+
+			// Add to conversation history for context (only once per unique output)
+			if (!conversationHistoryRef.current.includes(fullOutput)) {
+				conversationHistoryRef.current.push(fullOutput);
+			}
 		},
 		[nodes]
 	);
 
 	const handleSend = async () => {
+		console.log("🚀 [CHAT] handleSend called", {
+			activeAgentId,
+			hasInput: !!input.trim(),
+			imageCount: uploadedImages.length,
+			isRunning,
+		});
+
 		// Allow sending with just images (no text input required)
 		if (
 			!activeAgentId ||
 			(!input.trim() && uploadedImages.length === 0) ||
 			isRunning
 		) {
+			console.log("⚠️ [CHAT] handleSend validation failed", {
+				activeAgentId,
+				hasInput: !!input.trim(),
+				imageCount: uploadedImages.length,
+				isRunning,
+			});
 			return;
 		}
 
 		const promptText = input.trim() || "Process these images";
+
+		// Double-check we're not already running (race condition protection)
+		if (isRunning) {
+			console.log("⚠️ [CHAT] Already running, aborting");
+			return;
+		}
 
 		// Clear input immediately
 		setInput("");
@@ -201,6 +223,11 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 
 		setIsRunning(true);
 		setError(null);
+
+		console.log("📝 [CHAT] Creating run", {
+			agentId: activeAgentId,
+			promptLength: promptText.length,
+		});
 
 		try {
 			// Convert uploaded images to base64
@@ -230,87 +257,174 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 					? `${conversationContext}\n\nUser: ${promptText}`
 					: promptText;
 
-			const run = await createRun({
-				root_agent_id: activeAgentId,
-				input: {
-					prompt: enhancedPrompt,
-					task: promptText,
-					conversation_history: conversationHistoryRef.current.slice(-3), // Last 3 exchanges
+			// Get session_id from localStorage
+			const sessionId =
+				typeof window !== "undefined"
+					? localStorage.getItem("SESSION_ID")
+					: null;
+			const run = await createRun(
+				{
+					root_agent_id: activeAgentId,
+					input: {
+						prompt: enhancedPrompt,
+						task: promptText,
+						conversation_history: conversationHistoryRef.current.slice(-3), // Last 3 exchanges
+					},
+					images: imageBase64List.length > 0 ? imageBase64List : undefined,
 				},
-				images: imageBase64List.length > 0 ? imageBase64List : undefined,
-			});
+				sessionId || undefined
+			);
+
+			console.log("✅ [CHAT] Run created", { runId: run.id, sessionId });
 
 			// Clear images after sending
 			setUploadedImages([]);
 
-			// Track accumulated output for final message
-			let accumulatedOutput = "";
+			// Clear accumulated output tracking when starting new run
+			accumulatedOutputByAgentRef.current.clear();
+
+			// Clear finalized agents tracking when starting new run
+			finalizedAgentsRef.current.clear();
 
 			// Start SSE streaming
-			const eventSource = streamRun(run.id, (event) => {
-				if (event.type === "output_chunk") {
-					const chunk = event.data || "";
-					accumulatedOutput += chunk;
-					handleStreamingChunk(event.agent_id || activeAgentId, chunk);
-				} else if (event.type === "output") {
-					// Final output received
-					const finalOutput = event.data || "";
-					accumulatedOutput = finalOutput; // Use final output if provided
-					handleFinalOutput(
-						event.agent_id || activeAgentId,
-						finalOutput || accumulatedOutput
-					);
-				} else if (event.type === "status") {
-					if (event.data === "completed") {
-						// Ensure we have the final message
-						if (accumulatedOutput && currentStreamingMessageIdRef.current) {
-							handleFinalOutput(activeAgentId, accumulatedOutput);
+			console.log("🌊 [CHAT] Starting SSE stream", { runId: run.id });
+
+			const eventSource = streamRun(
+				run.id,
+				(event) => {
+					console.log("📨 [CHAT] SSE event received", {
+						type: event.type,
+						agentId: event.agent_id?.substring(0, 20),
+						dataLength: typeof event.data === "string" ? event.data.length : 0,
+					});
+
+					if (event.type === "output_chunk") {
+						const chunk =
+							(typeof event.data === "string" ? event.data : "") || "";
+						const agentId = event.agent_id || activeAgentId;
+
+						// Accumulate per agent
+						const current =
+							accumulatedOutputByAgentRef.current.get(agentId) || "";
+						accumulatedOutputByAgentRef.current.set(agentId, current + chunk);
+
+						handleStreamingChunk(agentId, chunk);
+					} else if (event.type === "output") {
+						// Final output received - this is the authoritative output
+						const finalOutput =
+							(typeof event.data === "string" ? event.data : "") || "";
+						const agentId = event.agent_id || activeAgentId;
+
+						// Update accumulated output for this agent
+						accumulatedOutputByAgentRef.current.set(agentId, finalOutput);
+
+						// Always use the final output from the "output" event
+						if (finalOutput.trim()) {
+							handleFinalOutput(agentId, finalOutput);
 						}
+					} else if (event.type === "status") {
+						console.log("📊 [CHAT] Status event", {
+							status: event.data,
+							agentId: event.agent_id,
+						});
+						if (event.data === "completed") {
+							// On completion, only finalize if we haven't received an "output" event yet
+							// Check if we have accumulated output for the active agent that hasn't been finalized
+							const activeAgentAccumulated =
+								accumulatedOutputByAgentRef.current.get(activeAgentId) || "";
+
+							if (
+								activeAgentAccumulated.trim() &&
+								currentStreamingMessageIdRef.current &&
+								currentStreamingMessageIdRef.current ===
+									`agent-${activeAgentId}-streaming`
+							) {
+								// Only finalize if we still have a streaming message (meaning no "output" event was received)
+								handleFinalOutput(activeAgentId, activeAgentAccumulated);
+							}
+							setIsRunning(false);
+						}
+					} else if (event.type === "error") {
+						const errorMsg =
+							(typeof event.data === "string" ? event.data : "Unknown error") ||
+							"Unknown error";
+						console.error("❌ [CHAT] Error event received", {
+							error: errorMsg,
+						});
+						setError(errorMsg);
 						setIsRunning(false);
+						// Remove streaming message on error
+						if (currentStreamingMessageIdRef.current) {
+							setChatMessages((prev) =>
+								prev.filter(
+									(msg) => msg.id !== currentStreamingMessageIdRef.current
+								)
+							);
+							currentStreamingMessageIdRef.current = null;
+						}
 					}
-				} else if (event.type === "error") {
-					setError(event.data || "Unknown error");
-					setIsRunning(false);
-					// Remove streaming message on error
-					if (currentStreamingMessageIdRef.current) {
-						setChatMessages((prev) =>
-							prev.filter(
-								(msg) => msg.id !== currentStreamingMessageIdRef.current
-							)
-						);
-						currentStreamingMessageIdRef.current = null;
-					}
-				}
-			});
+				},
+				sessionId || undefined
+			);
 
 			eventSourceRef.current = eventSource;
 
 			// Handle connection errors
-			eventSource.onerror = () => {
+			eventSource.onerror = (event) => {
+				console.error("❌ [CHAT] SSE error", {
+					event,
+					readyState: eventSource.readyState,
+					isRunning,
+				});
+
 				if (eventSource.readyState === EventSource.CLOSED) {
 					if (isRunning) {
+						// Try to finalize any accumulated output
+						const finalAccumulated =
+							accumulatedOutputByAgentRef.current.get(activeAgentId) || "";
+						if (
+							finalAccumulated.trim() &&
+							currentStreamingMessageIdRef.current
+						) {
+							const finalizationKey = `${activeAgentId}-${finalAccumulated.length}`;
+							if (!finalizedAgentsRef.current.has(finalizationKey)) {
+								handleFinalOutput(activeAgentId, finalAccumulated);
+							}
+						}
+
 						setError(
 							"Connection closed. The stream finished or was interrupted."
 						);
 						setIsRunning(false);
-						// Finalize message if we have accumulated output
-						if (accumulatedOutput && currentStreamingMessageIdRef.current) {
-							handleFinalOutput(activeAgentId, accumulatedOutput);
-						}
 					}
 				} else if (eventSource.readyState === EventSource.CONNECTING) {
-					console.log("SSE connecting...");
+					console.log("SSE reconnecting...");
+					// Don't set error during reconnection attempts
 				} else {
-					console.error("SSE error occurred");
-					if (isRunning && !error) {
+					console.error("SSE error occurred, state:", eventSource.readyState);
+					if (isRunning) {
+						// Try to finalize any accumulated output before showing error
+						const finalAccumulated =
+							accumulatedOutputByAgentRef.current.get(activeAgentId) || "";
+						if (
+							finalAccumulated.trim() &&
+							currentStreamingMessageIdRef.current
+						) {
+							const finalizationKey = `${activeAgentId}-${finalAccumulated.length}`;
+							if (!finalizedAgentsRef.current.has(finalizationKey)) {
+								handleFinalOutput(activeAgentId, finalAccumulated);
+							}
+						}
+
 						setError(
-							"Connection error occurred. Check your network connection."
+							"Connection error occurred. Check your network connection and try again."
 						);
 						setIsRunning(false);
 					}
 				}
 			};
 		} catch (err) {
+			console.error("❌ [CHAT] Failed to start run", { error: err });
 			setError(err instanceof Error ? err.message : "Failed to start run");
 			setIsRunning(false);
 			// Remove streaming message on error
@@ -356,10 +470,6 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 		return () => {
 			if (eventSourceRef.current) {
 				eventSourceRef.current.close();
-			}
-			if (typingTimerRef.current !== null) {
-				window.clearInterval(typingTimerRef.current);
-				typingTimerRef.current = null;
 			}
 		};
 	}, []);

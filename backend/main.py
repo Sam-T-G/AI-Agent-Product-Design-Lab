@@ -8,8 +8,6 @@ from core.settings import settings
 from core.logging import configure_logging, get_logger
 from api.router import api_router
 from db.database import init_db
-from db.database import get_db
-from core.pipeline_registry import PipelineRegistry
 
 # Configure logging
 configure_logging()
@@ -23,13 +21,12 @@ app = FastAPI(
 )
 
 # CORS middleware - must be added before routes
-# Allow common local dev hosts and local network IPs (e.g., 192.168.x.x:3000)
+cors_origins = settings.cors_origins or ["*"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_origin_regex=r"^http://(localhost|127\\.0\\.0\\.1|0\\.0\\.0\\.0|192\\.168\\.\\d+\\.\\d+):\\d{2,5}$",
+    allow_origins=cors_origins,
     allow_credentials=True,
-    allow_methods=["*"],  # Allow all methods
+    allow_methods=["*"],
     allow_headers=["*"],
     expose_headers=["*"],
     max_age=3600,
@@ -63,16 +60,6 @@ async def test_prompt(req: PromptRequest) -> Dict[str, Any]:
         "note": "Gemini integration not yet implemented",
     }
 
-
-@app.on_event("startup")
-async def _startup_refresh_pipeline() -> None:
-    """Build pipeline awareness at startup."""
-    try:
-        with get_db() as db:
-            PipelineRegistry.instance().refresh(db)
-            logger.info("pipeline_registry_initialized")
-    except Exception as e:
-        logger.warning("pipeline_registry_init_failed", error=str(e))
 
 if __name__ == "__main__":
     import uvicorn

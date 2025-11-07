@@ -8,7 +8,6 @@ from db.schemas import AgentModel, RunModel
 from core.models import RunLog
 from core.logging import get_logger
 from core.gemini_client import generate_text, generate_streaming
-from core.pipeline_registry import PipelineRegistry
 
 logger = get_logger("orchestrator")
 
@@ -33,6 +32,8 @@ class AgentOrchestrator:
         
         Yields execution events for streaming.
         """
+        logger.info("orchestrator_execute_run_start", run_id=run_id, root_agent_id=root_agent_id, has_api_key=bool(api_key), has_images=bool(images))
+        
         # Load run
         run = self.db.query(RunModel).filter(RunModel.id == run_id).first()
         if not run:
@@ -40,17 +41,25 @@ class AgentOrchestrator:
             yield {"type": "error", "data": f"Run {run_id} not found"}
             return
         
+        logger.info("orchestrator_run_loaded", run_id=run_id, session_id=run.session_id)
+        
         # Update run status
         run.status = "running"
         run.started_at = datetime.utcnow()
         self.db.commit()
+        logger.info("orchestrator_run_status_updated", run_id=run_id, status="running")
         
         try:
-            # Load agent graph (via registry for global awareness)
-            graph = self._load_agent_graph(root_agent_id)
+            # Get session_id from run
+            session_id = run.session_id if run else None
+            logger.info("orchestrator_loading_graph", run_id=run_id, root_agent_id=root_agent_id, session_id=session_id)
+            
+            # Load agent graph (within session)
+            graph = self._load_agent_graph(root_agent_id, session_id)
+            logger.info("orchestrator_graph_loaded", run_id=run_id, agent_count=len(graph))
             
             yield {"type": "status", "agent_id": root_agent_id, "data": "running"}
-            yield {"type": "log", "agent_id": root_agent_id, "data": f"Starting hierarchical execution from root agent"}
+            yield {"type": "log", "agent_id": root_agent_id, "data": f"✓ Starting hierarchical execution from root agent"}
             
             # Log the input data we received
             yield {
@@ -87,18 +96,18 @@ class AgentOrchestrator:
             }
             
             # Maximum iterations for bidirectional communication
-            # Reduced to 2 to prevent excessive API calls
-            max_iterations = 2
+            max_iterations = 5  # Increased from 3 to allow more back-and-forth
             iteration = 0
-            previous_messages_hash = None  # Track if messages actually changed
             
             while iteration < max_iterations:
                 iteration += 1
+                logger.info("orchestrator_iteration_start", run_id=run_id, iteration=iteration, max_iterations=max_iterations)
+                
                 if iteration > 1:
                     yield {
                         "type": "log",
                         "agent_id": "",
-                        "data": f"Starting communication iteration {iteration}",
+                        "data": f"✓ [ITERATION {iteration}] Starting communication iteration - parents will respond to child questions",
                     }
                 
                 # Execute each level
@@ -133,19 +142,6 @@ class AgentOrchestrator:
                         
                         # Prepare input based on hierarchy and child messages
                         if level_num == 0:
-                            # Root agent - only re-execute if we have child messages (iteration > 1)
-                            if iteration > 1:
-                                # Only re-execute root if we have new child messages
-                                if not child_messages.get(root_agent_id):
-                                    yield {
-                                        "type": "log",
-                                        "agent_id": agent_id,
-                                        "data": f"[SKIP] Root agent {agent.name} skipping iteration {iteration} - no new child messages",
-                                    }
-                                    # Skip root execution in subsequent iterations if no child messages
-                                    executed_agents.add(agent_id)
-                                    continue
-                            
                             # Root agent - ensure it gets the initial user input
                             root_input = self._prepare_root_input(input_data, child_messages.get(root_agent_id))
                             agent_input = root_input
@@ -171,17 +167,6 @@ class AgentOrchestrator:
                             parent_output = results.get(agent.parent_id, "")
                             # Include any child messages this parent has received
                             parent_messages = child_messages.get(agent.parent_id, [])
-                            # Relevance check: only execute child if relevant to current parent context
-                            # Use parent's output when available, otherwise fall back to original root input
-                            relevance_context = parent_output if parent_output else (input_data.get("prompt", "") if isinstance(input_data, dict) else str(input_data))
-                            if not self._is_child_relevant(agent.id, agent.parent_id, relevance_context):
-                                yield {
-                                    "type": "log",
-                                    "agent_id": agent_id,
-                                    "data": f"[SKIP] {agent.name} skipped - not relevant to parent context",
-                                }
-                                executed_agents.add(agent_id)
-                                continue
                             
                             # Log what we're getting from parent
                             parent_agent = graph.get(agent.parent_id)
@@ -266,8 +251,8 @@ class AgentOrchestrator:
                             ):
                                 output += chunk
                                 chunk_count += 1
-                                # Always stream root agent outputs to user (even in subsequent iterations)
-                                if level_num == 0:
+                                # Stream root agent chunks only on FIRST iteration
+                                if level_num == 0 and iteration == 1:
                                     yield {
                                         "type": "output_chunk",
                                         "agent_id": agent_id,
@@ -307,8 +292,8 @@ class AgentOrchestrator:
                                 "data": f"[ERROR] Root agent {agent.name} produced no meaningful output! This will cause children to fail.",
                             }
                         
-                        # Always show root agent outputs to user (even in subsequent iterations)
-                        if level_num == 0:
+                        # Stream ALL agent outputs on FIRST iteration (not just root)
+                        if iteration == 1:
                             yield {
                                 "type": "output",
                                 "agent_id": agent_id,
@@ -317,7 +302,7 @@ class AgentOrchestrator:
                             yield {
                                 "type": "log",
                                 "agent_id": agent_id,
-                                "data": f"[ROOT OUTPUT] {agent.name} final output streamed to user",
+                                "data": f"[OUTPUT STREAMED] {agent.name} output sent to frontend (Level {level_num})",
                             }
                         
                         yield {
@@ -345,15 +330,6 @@ class AgentOrchestrator:
                         
                         # Prepare input based on hierarchy and child messages
                         if level_num == 0:
-                            # For root agents, only execute if we have child messages (iteration > 1)
-                            if iteration > 1 and not child_messages.get(agent_id):
-                                # Return existing output without re-executing
-                                return {
-                                    "agent_id": agent_id,
-                                    "agent_name": agent.name,
-                                    "output": results.get(agent_id, ""),  # Return existing output
-                                    "chunks": [],
-                                }
                             agent_input = self._prepare_root_input(input_data, child_messages.get(agent_id))
                             # Log will be handled outside parallel execution
                         else:
@@ -405,27 +381,7 @@ class AgentOrchestrator:
                     
                     # Log inputs for parallel agents
                     if level_num == 0:
-                        # For root agents in iteration > 1, filter out those without child messages
-                        agents_to_execute = level_agents
-                        if iteration > 1:
-                            agents_with_messages = [
-                                aid for aid in level_agents
-                                if child_messages.get(aid)
-                            ]
-                            if agents_with_messages:
-                                agents_to_execute = agents_with_messages
-                            else:
-                                yield {
-                                    "type": "log",
-                                    "agent_id": "",
-                                    "data": "[SKIP] Root agents skipping iteration - no new child messages",
-                                }
-                                # Skip parallel root execution
-                                for agent_id in level_agents:
-                                    executed_agents.add(agent_id)
-                                continue
-                        
-                        for agent_id in agents_to_execute:
+                        for agent_id in level_agents:
                             agent = graph[agent_id]
                             agent_input = self._prepare_root_input(input_data, child_messages.get(agent_id))
                             yield {
@@ -433,9 +389,6 @@ class AgentOrchestrator:
                                 "agent_id": agent_id,
                                 "data": f"[DEBUG] Root agent input (iteration {iteration}):\n{agent_input[:500]}...",
                             }
-                        
-                        # Update level_agents to only include agents that should execute
-                        level_agents = agents_to_execute
                     else:
                         for agent_id in level_agents:
                             agent = graph[agent_id]
@@ -474,26 +427,19 @@ class AgentOrchestrator:
                             "data": f"[DEBUG] {agent_name} output ({len(output)} chars):\n{output[:500]}...",
                         }
                         
-                        # Root-level pause-on-question: if the root asks the user, pause run
-                        if level_num == 0:
-                            possible_question = self._extract_child_message(output)
-                            if possible_question:
-                                run.status = "awaiting_input"
-                                self.db.commit()
-                                yield {
-                                    "type": "await_user",
-                                    "agent_id": agent_id,
-                                    "data": possible_question,
-                                }
-                                return
-                            # Otherwise, stream root agent outputs
-                            for chunk in chunks:
-                                yield {
-                                    "type": "output_chunk",
-                                    "agent_id": agent_id,
-                                    "data": chunk,
-                                }
-                            # Stream complete output (only for root agent)
+                        # Stream ALL agent outputs on FIRST iteration (not just root)
+                        # This allows users to see child agents working dynamically
+                        if iteration == 1:
+                            # Stream chunks for root agent only (for real-time feel)
+                            if level_num == 0:
+                                for chunk in chunks:
+                                    yield {
+                                        "type": "output_chunk",
+                                        "agent_id": agent_id,
+                                        "data": chunk,
+                                    }
+                            
+                            # Stream complete output for ALL agents
                             yield {
                                 "type": "output",
                                 "agent_id": agent_id,
@@ -502,7 +448,7 @@ class AgentOrchestrator:
                             yield {
                                 "type": "log",
                                 "agent_id": agent_id,
-                                "data": f"[ROOT OUTPUT] {agent_name} final output streamed to user",
+                                "data": f"[OUTPUT STREAMED] {agent_name} output sent to frontend (Level {level_num})",
                             }
                         
                         executed_agents.add(agent_id)
@@ -526,12 +472,6 @@ class AgentOrchestrator:
                         graph, levels, results, executed_agents
                     )
                     
-                    # Create hash of messages to detect if they actually changed
-                    import hashlib
-                    messages_hash = hashlib.md5(
-                        str(sorted(new_messages.items())).encode()
-                    ).hexdigest() if new_messages else None
-                    
                     # Log collected messages
                     if new_messages:
                         for parent_id, messages in new_messages.items():
@@ -549,20 +489,14 @@ class AgentOrchestrator:
                             "data": "[DEBUG] No child messages collected - ending communication cycles",
                         }
                     
-                    # If no new messages OR messages haven't changed, stop iterating
+                    # If no new messages, we can stop iterating
                     if not new_messages:
-                        break
-                    
-                    # Check if messages are the same as previous iteration (prevent infinite loops)
-                    if messages_hash == previous_messages_hash:
                         yield {
                             "type": "log",
                             "agent_id": "",
-                            "data": "[DEBUG] Messages unchanged from previous iteration - ending to prevent loops",
+                            "data": f"[ITERATION {iteration}] Communication complete - no more messages from children",
                         }
                         break
-                    
-                    previous_messages_hash = messages_hash
                     
                     # Merge new messages into child_messages
                     for parent_id, messages in new_messages.items():
@@ -573,31 +507,51 @@ class AgentOrchestrator:
                     yield {
                         "type": "log",
                         "agent_id": "",
-                        "data": f"[DEBUG] Starting next iteration - parents will receive child messages",
+                        "data": f"[ITERATION {iteration}] Child agents have questions/reports - re-executing parents to respond",
                     }
                     
-                    # Clear executed agents for next iteration (except root)
-                    executed_agents = {root_agent_id}
+                    # Clear executed agents for next iteration
+                    # Only execute agents that need to respond to child messages
+                    executed_agents = set()
+                    for parent_id in new_messages.keys():
+                        # Mark that this parent needs to be re-executed
+                        if parent_id in graph:
+                            yield {
+                                "type": "log",
+                                "agent_id": parent_id,
+                                "data": f"[ITERATION {iteration+1}] {graph[parent_id].name} will respond to child messages",
+                            }
             
-            # Ensure final root agent output is always displayed
+            # Stream final root agent output only if we haven't already streamed it
+            # (Only stream if there were multiple iterations and output changed, or if no output was sent in first iteration)
             final_root_output = results.get(root_agent_id, "")
             if final_root_output:
-                yield {
-                    "type": "log",
-                    "agent_id": root_agent_id,
-                    "data": f"[FINAL OUTPUT] Streaming final root agent output ({len(final_root_output)} chars)",
-                }
-                yield {
-                    "type": "output",
-                    "agent_id": root_agent_id,
-                    "data": final_root_output,
-                }
+                # Check if this is different from what was already sent (if iteration > 1)
+                # For now, we'll only send final output if we had multiple iterations
+                # Otherwise, the first iteration output is sufficient
+                if iteration > 1:
+                    yield {
+                        "type": "log",
+                        "agent_id": root_agent_id,
+                        "data": f"[FINAL OUTPUT] Streaming updated root agent output after {iteration} iterations ({len(final_root_output)} chars)",
+                    }
+                    yield {
+                        "type": "output",
+                        "agent_id": root_agent_id,
+                        "data": final_root_output,
+                    }
+                else:
+                    yield {
+                        "type": "log",
+                        "agent_id": root_agent_id,
+                        "data": f"[FINAL OUTPUT] Root agent output already streamed in first iteration",
+                    }
             else:
                 yield {
                     "type": "log",
                     "agent_id": root_agent_id,
                     "data": "[WARNING] Root agent output is empty - no output to display",
-                        }
+                }
             
             # Mark run as completed
             run.status = "completed"
@@ -607,39 +561,46 @@ class AgentOrchestrator:
             yield {"type": "status", "agent_id": root_agent_id, "data": "completed"}
             
         except Exception as e:
-            logger.error("run_execution_error", run_id=run_id, error=str(e))
+            logger.error("run_execution_error", run_id=run_id, error=str(e), error_type=type(e).__name__, exc_info=True)
             run.status = "failed"
             run.error = str(e)
             run.finished_at = datetime.utcnow()
             self.db.commit()
-            yield {"type": "error", "agent_id": root_agent_id, "data": str(e)}
+            yield {"type": "error", "agent_id": root_agent_id, "data": f"Execution failed: {str(e)} ({type(e).__name__})"}
+            logger.info("orchestrator_run_marked_failed", run_id=run_id)
     
-    def _load_agent_graph(self, root_agent_id: str) -> Dict[str, AgentModel]:
-        """Load entire agent graph starting from root."""
-        # Prefer global registry if available
-        try:
-            registry = PipelineRegistry.instance()
-            graph = registry.get_graph_from_root(root_agent_id)
-            if graph:
-                return graph
-        except Exception:
-            # Fallback to direct DB traversal if registry not initialized
-            pass
-
-        graph: Dict[str, AgentModel] = {}
-        root = self.db.query(AgentModel).filter(AgentModel.id == root_agent_id).first()
+    def _load_agent_graph(self, root_agent_id: str, session_id: Optional[str] = None) -> Dict[str, AgentModel]:
+        """Load entire agent graph starting from root (within session if provided)."""
+        graph = {}
+        
+        # Load root agent
+        query = self.db.query(AgentModel).filter(AgentModel.id == root_agent_id)
+        if session_id:
+            query = query.filter(AgentModel.session_id == session_id)
+        root = query.first()
         if not root:
             raise ValueError(f"Root agent {root_agent_id} not found")
+        
+        # Get session_id from root if not provided
+        if not session_id:
+            session_id = root.session_id
+        
         graph[root_agent_id] = root
-        self._load_children(root_agent_id, graph)
+        
+        # Recursively load children (within session)
+        self._load_children(root_agent_id, graph, session_id)
+        
         return graph
     
-    def _load_children(self, parent_id: str, graph: Dict[str, AgentModel]):
-        """Recursively load child agents."""
-        children = self.db.query(AgentModel).filter(AgentModel.parent_id == parent_id).all()
+    def _load_children(self, parent_id: str, graph: Dict[str, AgentModel], session_id: Optional[str] = None):
+        """Recursively load child agents (within session if provided)."""
+        query = self.db.query(AgentModel).filter(AgentModel.parent_id == parent_id)
+        if session_id:
+            query = query.filter(AgentModel.session_id == session_id)
+        children = query.all()
         for child in children:
             graph[child.id] = child
-            self._load_children(child.id, graph)
+            self._load_children(child.id, graph, session_id)
     
     def _get_hierarchical_levels(
         self,
@@ -674,16 +635,6 @@ class AgentOrchestrator:
             current_level = next_level
         
         return levels
-
-    def _is_child_relevant(self, child_id: str, parent_id: Optional[str], context_text: str) -> bool:
-        """Use registry heuristics to decide if a child should execute."""
-        try:
-            registry = PipelineRegistry.instance()
-            relevant = registry.select_relevant_children(parent_id or "", context_text)
-            return child_id in relevant
-        except Exception:
-            # If registry not available, default to execute
-            return True
     
     def _prepare_root_input(self, root_input: Dict, child_messages: Optional[List[str]] = None) -> str:
         """Prepare input for root agent from user's injected prompt and child messages."""
@@ -744,18 +695,6 @@ class AgentOrchestrator:
                 messages_text = "\n\n".join(child_messages)
                 base_input += f"\n\n=== MESSAGES FROM YOUR CHILD AGENTS ===\n{messages_text}"
                 base_input += "\n\nPlease review these messages and respond appropriately."
-        
-        # Include any user clarifications captured on the run input
-        if isinstance(root_input, dict):
-            clarifications = root_input.get("clarifications") or []
-            try:
-                clar_text = "\n".join(
-                    f"- {c.get('text','')}" for c in clarifications if isinstance(c, dict)
-                )
-            except Exception:
-                clar_text = "\n".join(f"- {c}" for c in clarifications)
-            if clar_text.strip():
-                base_input += f"\n\n=== USER CLARIFICATIONS ===\n{clar_text}"
         
         return base_input
     

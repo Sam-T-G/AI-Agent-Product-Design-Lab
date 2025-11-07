@@ -6,17 +6,21 @@ import { AgentCanvas } from "@/components/canvas/AgentCanvas";
 import { AgentDrawer } from "@/components/drawer/AgentDrawer";
 import { ChatInterface } from "@/components/chat/ChatInterface";
 import { ApiKeyModal } from "@/components/modal/ApiKeyModal";
-import { listAgents, createAgent, deleteAgent, createLink, deleteLink, updateAgent } from "@/lib/api";
+import { SessionSelector } from "@/components/modal/SessionSelector";
+import { listAgents, createAgent, deleteAgent, createLink, deleteLink, updateAgent, getSession } from "@/lib/api";
 import { useGraphStore } from "@/lib/store";
-import { Agent, AgentNode, AgentEdge, AgentCreate } from "@/lib/types";
+import { Agent, AgentNode, AgentEdge, AgentCreate, Session } from "@/lib/types";
 
 export default function LabPage() {
   const queryClient = useQueryClient();
   const { nodes, edges, setNodes, setEdges, selectedNodeId, setSelectedNode } = useGraphStore();
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [showSessionSelector, setShowSessionSelector] = useState(false);
   const [showApiKeyModal, setShowApiKeyModal] = useState(false);
   const [hasApiKey, setHasApiKey] = useState(false);
+  const [hasSession, setHasSession] = useState(false);
+  const [currentSession, setCurrentSession] = useState<Session | null>(null);
 
   // Create agent mutation with optimistic update
   const createAgentMutation = useMutation({
@@ -122,11 +126,12 @@ export default function LabPage() {
     },
   });
 
-  // Fetch agents from API
+  // Fetch agents from API (only when session is available)
   const { data: agents = [], error: agentsError, isLoading: agentsLoading } = useQuery({
     queryKey: ["agents"],
     queryFn: listAgents,
     retry: 2,
+    enabled: hasSession, // Only fetch when session is selected
   });
 
   // Log errors for debugging
@@ -195,9 +200,51 @@ export default function LabPage() {
     }
   }, [agents, agentNodes, agentEdges, setNodes, setEdges]);
 
-  // Check for API key on mount
+  // Load current session info
+  useEffect(() => {
+    const loadSessionInfo = async () => {
+      if (typeof window !== "undefined") {
+        try {
+          const sessionId = localStorage.getItem("SESSION_ID");
+          if (sessionId) {
+            try {
+              const session = await getSession(sessionId);
+              setCurrentSession(session);
+            } catch {
+              // Session might not exist, clear it
+              localStorage.removeItem("SESSION_ID");
+              setCurrentSession(null);
+            }
+          }
+        } catch {}
+      }
+    };
+    if (hasSession) {
+      loadSessionInfo();
+    }
+  }, [hasSession]);
+
+  // Check for session and API key on mount
+  // Always require session first, then API key
   useEffect(() => {
     if (typeof window !== "undefined") {
+      const checkSession = () => {
+        try {
+          const sessionId = localStorage.getItem("SESSION_ID");
+          if (sessionId && sessionId.trim().length > 0) {
+            setHasSession(true);
+            setShowSessionSelector(false);
+            checkApiKey();
+          } else {
+            setHasSession(false);
+            setShowSessionSelector(true);
+          }
+        } catch {
+          setHasSession(false);
+          setShowSessionSelector(true);
+        }
+      };
+      
       const checkApiKey = () => {
         try {
           const apiKey = localStorage.getItem("GEMINI_API_KEY");
@@ -214,10 +261,54 @@ export default function LabPage() {
         }
       };
       
-      checkApiKey();
+      // Always start with session check
+      checkSession();
     }
   }, []);
 
+  // Handle manual session switch
+  const handleSwitchSession = () => {
+    setShowSessionSelector(true);
+    // Don't clear session immediately - let user select new one
+    // The selector will update it when a new session is chosen
+  };
+
+  // Handle session selection
+  const handleSessionSelect = async (sessionId: string) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("SESSION_ID", sessionId);
+    }
+    setHasSession(true);
+    setShowSessionSelector(false);
+    
+    // Load session info
+    try {
+      const session = await getSession(sessionId);
+      setCurrentSession(session);
+    } catch {
+      setCurrentSession(null);
+    }
+    
+    // After session is selected, check for API key
+    if (typeof window !== "undefined") {
+      try {
+        const apiKey = localStorage.getItem("GEMINI_API_KEY");
+        if (apiKey && apiKey.trim().length > 0) {
+          setHasApiKey(true);
+          setShowApiKeyModal(false);
+        } else {
+          setHasApiKey(false);
+          setShowApiKeyModal(true);
+        }
+      } catch {
+        setHasApiKey(false);
+        setShowApiKeyModal(true);
+      }
+    }
+    
+    // Invalidate queries to reload data for new session
+    queryClient.invalidateQueries({ queryKey: ["agents"] });
+  };
 
   // Handle API key save
   const handleApiKeySave = (apiKey: string) => {
@@ -302,23 +393,31 @@ export default function LabPage() {
 
   return (
     <div className="h-screen flex flex-col bg-gray-50">
-      {/* API Key Modal - Required on first load */}
+      {/* Session Selector Modal - Required first */}
+      <SessionSelector
+        isOpen={showSessionSelector}
+        onSelect={handleSessionSelect}
+      />
+
+      {/* API Key Modal - Required after session selection */}
       <ApiKeyModal
-        isOpen={showApiKeyModal}
+        isOpen={showApiKeyModal && hasSession}
         onSave={handleApiKeySave}
       />
 
-      {/* Block UI if no API key */}
-      {!hasApiKey && (
+      {/* Block UI if no session or no API key */}
+      {(!hasSession || !hasApiKey) && (
         <div className="absolute inset-0 z-[100] bg-gray-50 flex items-center justify-center">
           <div className="text-center">
-            <p className="text-gray-600">Please enter your API key to continue</p>
+            <p className="text-gray-600">
+              {!hasSession ? "Please select or create a session to continue" : "Please enter your API key to continue"}
+            </p>
           </div>
         </div>
       )}
 
-      {/* Main Content - Only show if API key is set */}
-      {hasApiKey && (
+      {/* Main Content - Only show if session and API key are set */}
+      {hasSession && hasApiKey && (
         <>
       {/* Header */}
       <header className="bg-white border-b border-gray-200 px-4 sm:px-6 py-4 shadow-sm">
@@ -326,17 +425,29 @@ export default function LabPage() {
           <div>
             <h1 className="text-xl sm:text-2xl font-bold text-gray-900">
               AI Agent Product Design Lab
-            </h1>
+          </h1>
             <p className="text-xs sm:text-sm text-gray-600 mt-1">
               Create, connect, and execute modular AI agents
             </p>
           </div>
           <div className="flex items-center gap-3">
+            {currentSession && (
+              <div className="text-xs sm:text-sm text-gray-600">
+                <span className="font-medium">Session:</span> {currentSession.name}
+              </div>
+            )}
             {rootAgent && (
               <div className="text-xs sm:text-sm text-gray-600">
                 <span className="font-medium">Root:</span> {rootAgent.name}
               </div>
             )}
+            <button
+              onClick={handleSwitchSession}
+              className="px-3 py-1.5 rounded-md text-xs font-medium bg-blue-100 hover:bg-blue-200 text-blue-700 transition-colors"
+              title="Switch Session"
+            >
+              Switch Session
+            </button>
             <button
               onClick={() => {
                 setShowApiKeyModal(true);

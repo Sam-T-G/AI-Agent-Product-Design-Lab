@@ -1,5 +1,16 @@
 /** TypeScript types matching backend models. */
 
+export interface Session {
+  id: string;
+  name: string;
+  created_at: string;
+  last_accessed: string;
+}
+
+export interface SessionCreate {
+  name: string;
+}
+
 export interface ToolConfig {
   name: string;
   params: Record<string, any>;

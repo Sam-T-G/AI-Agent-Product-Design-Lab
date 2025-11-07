@@ -66,6 +66,58 @@ async def generate_text(
         raise
 
 
+async def generate_text(
+    system_prompt: str,
+    user_input: str,
+    model: str = "gemini-2.5-flash",
+    temperature: float = 0.7,
+    api_key: Optional[str] = None,
+) -> str:
+    """
+    Generate text without streaming (for internal processing).
+    
+    Args:
+        system_prompt: System prompt defining behavior
+        user_input: User input/message
+        model: Gemini model to use
+        temperature: Sampling temperature (0-1)
+        api_key: Optional API key override
+        
+    Returns:
+        Complete generated text
+    """
+    configure_gemini(api_key)
+    
+    generation_config = {
+        "temperature": temperature,
+    }
+    
+    try:
+        model_client = genai.GenerativeModel(
+            model_name=model,
+            generation_config=generation_config,
+        )
+        
+        full_prompt = f"{system_prompt}\n\nUser: {user_input}\n\nAssistant:"
+        response = model_client.generate_content(full_prompt)
+        
+        if hasattr(response, 'text') and response.text:
+            return response.text
+        elif hasattr(response, 'parts') and response.parts:
+            text_parts = []
+            for part in response.parts:
+                if hasattr(part, 'text') and part.text:
+                    text_parts.append(part.text)
+            return "".join(text_parts)
+        else:
+            logger.warning("gemini_no_text_generated", model=model)
+            return "[No response generated]"
+            
+    except Exception as e:
+        logger.error("gemini_text_error", error=str(e), model=model)
+        return f"[Error: {str(e)}]"
+
+
 async def generate_streaming(
     system_prompt: str,
     user_input: str,
@@ -87,6 +139,7 @@ async def generate_streaming(
     
     Yields chunks of text as they're generated.
     """
+    logger.info("gemini_generate_start", model=model, has_api_key=bool(api_key), has_images=bool(images), prompt_length=len(user_input))
     configure_gemini(api_key)
     
     generation_config = {
@@ -141,12 +194,55 @@ async def generate_streaming(
             stream=True,
         )
         
+        # Use asyncio to avoid blocking the event loop
+        import asyncio
+        loop = asyncio.get_event_loop()
+        
+        # Process chunks in a non-blocking way
+        has_content = False
+        chunk_count = 0
         for chunk in response:
-            if chunk.text:
+            # Yield control back to the event loop periodically
+            await asyncio.sleep(0)
+            
+            chunk_count += 1
+            
+            # Check if chunk has text content
+            if hasattr(chunk, 'text') and chunk.text:
+                has_content = True
                 yield chunk.text
+            elif hasattr(chunk, 'parts') and chunk.parts:
+                # Handle parts directly if text accessor fails
+                for part in chunk.parts:
+                    if hasattr(part, 'text') and part.text:
+                        has_content = True
+                        yield part.text
+        
+        logger.info("gemini_generate_complete", model=model, chunk_count=chunk_count, has_content=has_content)
+        
+        # If no content was generated, check finish_reason
+        if not has_content:
+            # Try to get finish_reason from response metadata
+            finish_reason = "unknown"
+            try:
+                if hasattr(response, '_done') and response._done:
+                    if hasattr(response, 'candidates') and response.candidates:
+                        finish_reason = response.candidates[0].finish_reason if response.candidates[0].finish_reason else "unknown"
+            except:
+                pass
+            
+            logger.warning(
+                "gemini_no_content_generated",
+                model=model,
+                finish_reason=finish_reason,
+                prompt_length=len(user_input),
+            )
+            # Yield a helpful error message instead of crashing
+            yield f"[System: The AI model did not generate a response. This may be due to content filtering or the prompt being too complex. Please try rephrasing or simplifying your request.]"
                 
     except Exception as e:
         logger.error("gemini_streaming_error", error=str(e), model=model)
-        raise
+        # Don't crash - yield error message
+        yield f"[System Error: {str(e)}]"
 
 

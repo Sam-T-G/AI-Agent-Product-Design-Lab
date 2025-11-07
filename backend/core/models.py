@@ -4,6 +4,23 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 
 
+class SessionCreate(BaseModel):
+    """Request model for creating a session."""
+    name: str
+
+
+class Session(BaseModel):
+    """Session response model."""
+    id: str
+    name: str
+    created_at: datetime
+    last_accessed: datetime
+    
+    model_config = {
+        "from_attributes": True,
+    }
+
+
 class ToolConfig(BaseModel):
     """Tool configuration."""
     name: str

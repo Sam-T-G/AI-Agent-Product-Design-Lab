@@ -48,26 +48,32 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
   }, [agent]);
 
   // Autosave with debounce when formData changes
-  // Only autosave if formData actually changed (not just on mount)
-  const previousFormDataRef = useRef<string>("");
   useEffect(() => {
     if (!agent) return;
     
-    // Skip if formData hasn't actually changed (avoid saving on initial mount)
-    const formDataStr = JSON.stringify(formData);
-    if (formDataStr === previousFormDataRef.current) {
+    // Skip autosave if formData is empty or invalid
+    if (!formData.name || !formData.name.trim()) {
       return;
     }
-    previousFormDataRef.current = formDataStr;
     
     if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     debounceTimerRef.current = setTimeout(async () => {
       try {
+        // Check if session ID exists before attempting save
+        if (typeof window !== "undefined") {
+          const sessionId = localStorage.getItem("SESSION_ID");
+          if (!sessionId) {
+            console.warn("Autosave skipped: No session ID available");
+            return;
+          }
+        }
+        
         await updateAgent(agent.id, formData);
       } catch (e) {
         console.error("Autosave failed:", e);
+        // Don't show alert for autosave failures - just log
       }
-    }, 1000); // Increased debounce to 1 second to reduce API calls
+    }, 600);
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     };
@@ -75,6 +81,15 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
 
   const handleSave = async () => {
     if (!agent) return;
+    
+    // Validate session ID before attempting save
+    if (typeof window !== "undefined") {
+      const sessionId = localStorage.getItem("SESSION_ID");
+      if (!sessionId) {
+        alert("No session selected. Please select a session first.");
+        return;
+      }
+    }
     
     setIsSaving(true);
     try {
@@ -84,7 +99,8 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
       onClose();
     } catch (error) {
       console.error("Failed to save agent:", error);
-      alert("Failed to save agent. Please try again.");
+      const errorMessage = error instanceof Error ? error.message : "Failed to save agent";
+      alert(`Failed to save agent: ${errorMessage}`);
     } finally {
       setIsSaving(false);
     }
