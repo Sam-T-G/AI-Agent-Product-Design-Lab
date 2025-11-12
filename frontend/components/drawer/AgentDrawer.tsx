@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { Agent, AgentCreate } from "@/lib/types";
-import { updateAgent, createAgent } from "@/lib/api";
+import { updateAgent } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { ConfirmModal } from "@/components/modal/ConfirmModal";
 
@@ -47,9 +47,11 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
     }
   }, [agent]);
 
+  const currentAgentId = agent?.id;
+
   // Autosave with debounce when formData changes
   useEffect(() => {
-    if (!agent) return;
+    if (!currentAgentId) return;
     
     // Skip autosave if formData is empty or invalid
     if (!formData.name || !formData.name.trim()) {
@@ -68,7 +70,7 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
           }
         }
         
-        await updateAgent(agent.id, formData);
+        await updateAgent(currentAgentId, formData);
       } catch (e) {
         console.error("Autosave failed:", e);
         // Don't show alert for autosave failures - just log
@@ -77,7 +79,7 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
     return () => {
       if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     };
-  }, [agent?.id, formData]);
+  }, [currentAgentId, formData]);
 
   const handleSave = async () => {
     if (!agent) return;
@@ -365,5 +367,3 @@ export function AgentDrawer({ agent, onClose, onSave, onDelete, agents = [] }: A
     </div>
   );
 }
-
-

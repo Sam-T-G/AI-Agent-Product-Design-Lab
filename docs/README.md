@@ -1,15 +1,15 @@
-## Documentation
+# Documentation Reset
 
-Centralized documentation for the AI Agent Product Design Lab.
+The previous documentation set has been removed. This repo now reflects the current working build of the AI Agent Product Design Lab. Fresh reference docs will be authored from this point forward.
 
-### Structure
-- **planning/**: Specs, architecture decisions, user stories, diagrams, milestones.
-- **implementation/**: Technical design docs, API specs, data models, component guides.
-- **notes-lessons-learned/**: Retrospectives, gotchas, decision rationales, post-mortems.
+## What exists today
+- FastAPI backend with session-scoped agents and run orchestration
+- Next.js frontend for managing agents and running conversations
+- Gemini integration where users provide their own API key at runtime
 
-### Conventions
-- Keep docs concise and living; update as the code changes.
-- Prefer one topic per file.
-- Use dates in filenames when helpful (e.g., `2025-11-03-architecture-notes.md`).
+## Next steps for docs
+1. Capture an updated architecture overview once the new direction stabilizes
+2. Rewrite the setup guide after the deployment workflow is finalized
+3. Add focused guides (agent editing, session management, running workflows) based on the pared-down feature set
 
-
+Until those sections are written, use the root README for setup instructions.

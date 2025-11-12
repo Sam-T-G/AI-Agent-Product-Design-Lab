@@ -13,7 +13,7 @@ import { Agent, AgentNode, AgentEdge, AgentCreate, Session } from "@/lib/types";
 
 export default function LabPage() {
   const queryClient = useQueryClient();
-  const { nodes, edges, setNodes, setEdges, selectedNodeId, setSelectedNode } = useGraphStore();
+  const { setNodes, setEdges, selectedNodeId, setSelectedNode } = useGraphStore();
   const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [showSessionSelector, setShowSessionSelector] = useState(false);
@@ -127,7 +127,7 @@ export default function LabPage() {
   });
 
   // Fetch agents from API (only when session is available)
-  const { data: agents = [], error: agentsError, isLoading: agentsLoading } = useQuery({
+  const { data: agents = [], error: agentsError } = useQuery({
     queryKey: ["agents"],
     queryFn: listAgents,
     retry: 2,
@@ -274,7 +274,18 @@ export default function LabPage() {
   };
 
   // Handle session selection
-  const handleSessionSelect = async (sessionId: string) => {
+  const handleSessionSelect = async (sessionId: string | null) => {
+    if (!sessionId) {
+      if (typeof window !== "undefined") {
+        localStorage.removeItem("SESSION_ID");
+      }
+      setHasSession(false);
+      setCurrentSession(null);
+      setShowSessionSelector(true);
+      queryClient.removeQueries({ queryKey: ["agents"] });
+      return;
+    }
+
     if (typeof window !== "undefined") {
       localStorage.setItem("SESSION_ID", sessionId);
     }
@@ -312,6 +323,9 @@ export default function LabPage() {
 
   // Handle API key save
   const handleApiKeySave = (apiKey: string) => {
+    if (typeof window !== "undefined") {
+      localStorage.setItem("GEMINI_API_KEY", apiKey);
+    }
     setHasApiKey(true);
     setShowApiKeyModal(false);
   };
@@ -550,6 +564,7 @@ export default function LabPage() {
             />
           ) : (
             <ChatInterface 
+              key={selectedNodeId || rootAgent?.id || "chat-root"}
               agentId={selectedNodeId || undefined}
               rootAgentId={rootAgent?.id}
             />

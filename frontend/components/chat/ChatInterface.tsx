@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import Image from "next/image";
 import { createRun, streamRun } from "@/lib/api";
 import { useGraphStore } from "@/lib/store";
 import { AgentChat, ChatMessage } from "./AgentChat";
@@ -28,40 +29,9 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const currentStreamingMessageIdRef = useRef<string | null>(null);
 	const conversationHistoryRef = useRef<string[]>([]); // Track conversation for context
-	const previousAgentIdRef = useRef<string | undefined>(undefined);
-	const shouldClearChatRef = useRef(false);
 	const messageIdCounterRef = useRef(0); // Unique counter for message IDs
 	const finalizedAgentsRef = useRef<Set<string>>(new Set()); // Track finalized agents to prevent duplicates
 	const accumulatedOutputByAgentRef = useRef<Map<string, string>>(new Map()); // Track accumulated output per agent
-
-	// Clear chat when agent changes - use ref flag to avoid React warning
-	useEffect(() => {
-		if (
-			previousAgentIdRef.current !== undefined &&
-			previousAgentIdRef.current !== activeAgentId
-		) {
-			shouldClearChatRef.current = true;
-		}
-		previousAgentIdRef.current = activeAgentId;
-	}, [activeAgentId]);
-
-	// Separate effect to handle clearing (React best practice)
-	useEffect(() => {
-		if (shouldClearChatRef.current) {
-			shouldClearChatRef.current = false;
-			setChatMessages([]);
-			setError(null);
-			setUploadedImages([]);
-			conversationHistoryRef.current = [];
-			currentStreamingMessageIdRef.current = null;
-			finalizedAgentsRef.current.clear(); // Clear finalized agents tracking
-			if (eventSourceRef.current) {
-				eventSourceRef.current.close();
-				eventSourceRef.current = null;
-			}
-			setIsRunning(false);
-		}
-	}, []); // Intentionally empty - only runs when flag is set
 
 	// Auto-scroll to bottom when messages change
 	useEffect(() => {
@@ -621,13 +591,16 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 				{/* Image Preview */}
 				{uploadedImages.length > 0 && (
 					<div className="mb-3 flex flex-wrap gap-2">
-						{uploadedImages.map((img, idx) => (
-							<div key={idx} className="relative group">
-								<img
-									src={img.preview}
-									alt={`Upload ${idx + 1}`}
-									className="w-20 h-20 object-cover rounded-lg border border-gray-300"
-								/>
+							{uploadedImages.map((img, idx) => (
+								<div key={idx} className="relative group">
+									<Image
+										src={img.preview}
+										alt={`Upload ${idx + 1}`}
+										width={80}
+										height={80}
+										className="w-20 h-20 object-cover rounded-lg border border-gray-300"
+										unoptimized
+									/>
 								<button
 									onClick={() => handleRemoveImage(idx)}
 									className="absolute -top-2 -right-2 w-6 h-6 bg-red-500 text-white rounded-full text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">

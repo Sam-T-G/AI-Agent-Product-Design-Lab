@@ -23,10 +23,11 @@ logger = get_logger("orchestrator_v2")
 class AgentExecutor:
     """Executes individual agents with their context."""
     
-    def __init__(self, agent: AgentModel, api_key: str):
+    def __init__(self, agent: AgentModel, api_key: str, images: Optional[List[str]] = None):
         self.agent = agent
         self.api_key = api_key
         self.mailbox = AgentMailbox(agent.id)
+        self.images = images or []
         
     async def execute(
         self,
@@ -85,7 +86,8 @@ class AgentExecutor:
                 user_input=task,
                 model=model,
                 temperature=temperature,
-                api_key=self.api_key
+                api_key=self.api_key,
+                images=self._images_for_agent()
             ):
                 full_output += chunk
                 yield {
@@ -116,6 +118,19 @@ class AgentExecutor:
                 "agent_id": self.agent.id,
                 "data": f"Error: {str(e)}"
             }
+    
+    def _agent_supports_images(self) -> bool:
+        """Return True if this agent allows photo injection."""
+        value = getattr(self.agent, "photo_injection_enabled", False)
+        if isinstance(value, str):
+            return value.lower() == "true"
+        return bool(value)
+    
+    def _images_for_agent(self) -> Optional[List[str]]:
+        """Pass images only when agent supports it."""
+        if not self.images or not self._agent_supports_images():
+            return None
+        return self.images
     
     def _build_system_prompt(self, context: Optional[Dict] = None) -> str:
         """Build system prompt for the agent."""
@@ -168,6 +183,7 @@ class MessageBasedOrchestrator:
         self.db = db
         self.executors: Dict[str, AgentExecutor] = {}
         self.agent_outputs: Dict[str, str] = {}
+        self.final_output: Optional[str] = None
         
     async def execute_run(
         self,
@@ -292,7 +308,7 @@ class MessageBasedOrchestrator:
                 "data": "🚀 Phase 3: Root agent executing..."
             }
             
-            root_executor = AgentExecutor(root_agent, api_key)
+            root_executor = AgentExecutor(root_agent, api_key, images)
             self.executors[root_agent_id] = root_executor
             
             # Build context for root
@@ -307,6 +323,8 @@ class MessageBasedOrchestrator:
                 # Capture final output
                 if event["type"] == "output":
                     self.agent_outputs[root_agent_id] = event["data"]
+                    if not selected_children:
+                        self.final_output = event["data"]
             
             # Phase 4: Execute selected children (if any) - RECURSIVELY
             if selected_children:
@@ -331,7 +349,8 @@ class MessageBasedOrchestrator:
                         parent_output=self.agent_outputs.get(root_agent_id, ""),
                         session_id=session_id,
                         api_key=api_key,
-                        depth=1
+                        depth=1,
+                        images=images
                     ):
                         yield event
                 
@@ -361,11 +380,15 @@ Provide a synthesized, coherent response:"""
                 async for event in root_executor.execute(synthesis_task, {}):
                     yield event
                     if event["type"] == "output":
-                        self.agent_outputs[f"{root_agent_id}_final"] = event["data"]
+                        self.final_output = event["data"]
             
             # Mark run as completed
             run.status = "completed"
-            run.output = self.agent_outputs.get(f"{root_agent_id}_final") or self.agent_outputs.get(root_agent_id, "")
+            final_response = self.final_output or self.agent_outputs.get(root_agent_id, "")
+            run.output = {
+                "final": final_response,
+                "agents": self.agent_outputs,
+            }
             run.finished_at = datetime.utcnow()
             self.db.commit()
             
@@ -392,7 +415,8 @@ Provide a synthesized, coherent response:"""
         parent_output: str,
         session_id: str,
         api_key: str,
-        depth: int = 0
+        depth: int = 0,
+        images: Optional[List[str]] = None
     ) -> AsyncGenerator[Dict, None]:
         """
         Execute an agent and recursively execute its children if needed.
@@ -417,7 +441,7 @@ Provide a synthesized, coherent response:"""
             context["child_agents"] = AgentSelector.format_agent_capabilities(children)
         
         # Execute this agent
-        agent_executor = AgentExecutor(agent, api_key)
+        agent_executor = AgentExecutor(agent, api_key, images)
         self.executors[agent.id] = agent_executor
         
         delegation_task = self._extract_delegation_for_child(
@@ -455,7 +479,8 @@ Provide a synthesized, coherent response:"""
                     parent_output=agent_output,
                     session_id=session_id,
                     api_key=api_key,
-                    depth=depth + 1
+                    depth=depth + 1,
+                    images=images
                 ):
                     yield child_event
     
@@ -488,4 +513,3 @@ Provide a synthesized, coherent response:"""
             AgentModel.session_id == session_id
         ).all()
         return children
-

@@ -123,7 +123,7 @@ class Run(BaseModel):
     root_agent_id: str
     status: str  # pending, running, completed, failed, cancelled
     input: Dict[str, Any]
-    output: Dict[str, str] = Field(default_factory=dict)
+    output: Dict[str, Any] = Field(default_factory=dict)
     logs: List[RunLog] = Field(default_factory=list)
     created_at: datetime
     started_at: Optional[datetime] = None
@@ -133,5 +133,4 @@ class Run(BaseModel):
     model_config = {
         "from_attributes": True,
     }
-
 

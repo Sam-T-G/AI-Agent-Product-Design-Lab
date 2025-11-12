@@ -1,7 +1,7 @@
 /** Zustand store with Immer for state management. */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { Agent, AgentNode, AgentEdge } from "./types";
+import { AgentNode, AgentEdge } from "./types";
 
 interface GraphSlice {
 	nodes: AgentNode[];

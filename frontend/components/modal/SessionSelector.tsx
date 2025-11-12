@@ -6,7 +6,7 @@ import { ConfirmModal } from "./ConfirmModal";
 
 interface SessionSelectorProps {
 	isOpen: boolean;
-	onSelect: (sessionId: string) => void;
+	onSelect: (sessionId: string | null) => void;
 }
 
 export function SessionSelector({ isOpen, onSelect }: SessionSelectorProps) {
@@ -79,7 +79,7 @@ export function SessionSelector({ isOpen, onSelect }: SessionSelectorProps) {
 			const currentSessionId = localStorage.getItem("SESSION_ID");
 			if (currentSessionId === sessionToDelete.id) {
 				localStorage.removeItem("SESSION_ID");
-				onSelect(""); // Trigger re-evaluation
+				onSelect(null); // Trigger re-evaluation
 			}
 			
 			// Reload sessions list
@@ -217,4 +217,3 @@ export function SessionSelector({ isOpen, onSelect }: SessionSelectorProps) {
 		</>
 	);
 }
-

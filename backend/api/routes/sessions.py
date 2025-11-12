@@ -8,6 +8,7 @@ from db.database import get_db_session
 from db.schemas import SessionModel
 from core.models import Session, SessionCreate
 from core.logging import get_logger
+from core.agent_tree_cache import get_agent_tree_cache
 
 logger = get_logger("sessions")
 router = APIRouter(prefix="/sessions", tags=["sessions"])
@@ -68,5 +69,5 @@ async def delete_session(session_id: str, db: Session = Depends(get_db_session))
     db.delete(session)
     db.commit()
     logger.info("session_deleted", session_id=session_id)
+    get_agent_tree_cache().clear_session(session_id)
     return None
-

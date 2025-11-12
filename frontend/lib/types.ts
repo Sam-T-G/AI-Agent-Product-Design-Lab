@@ -13,7 +13,7 @@ export interface SessionCreate {
 
 export interface ToolConfig {
   name: string;
-  params: Record<string, any>;
+  params: Record<string, unknown>;
 }
 
 export interface Agent {
@@ -22,7 +22,7 @@ export interface Agent {
   role: string;
   system_prompt: string;
   tools: ToolConfig[];
-  parameters: Record<string, any>;
+  parameters: Record<string, unknown>;
   photo_injection_enabled: boolean;
   photo_injection_features: string[];
   parent_id: string | null;
@@ -37,7 +37,7 @@ export interface AgentCreate {
   role: string;
   system_prompt: string;
   tools?: ToolConfig[];
-  parameters?: Record<string, any>;
+  parameters?: Record<string, unknown>;
   photo_injection_enabled?: boolean;
   photo_injection_features?: string[];
   parent_id?: string | null;
@@ -57,12 +57,18 @@ export interface LinkCreate {
   child_agent_id: string;
 }
 
+export interface RunOutput {
+  final?: string;
+  agents?: Record<string, string>;
+  [key: string]: unknown;
+}
+
 export interface Run {
   id: string;
   root_agent_id: string;
   status: "pending" | "running" | "completed" | "failed" | "cancelled";
-  input: Record<string, any>;
-  output: Record<string, string>;
+  input: Record<string, unknown>;
+  output: RunOutput;
   logs: Array<{
     agent_id: string;
     timestamp: string;
@@ -77,7 +83,7 @@ export interface Run {
 
 export interface RunRequest {
   root_agent_id: string;
-  input: Record<string, any>;
+  input: Record<string, unknown>;
   images?: string[]; // Base64-encoded image strings
 }
 
@@ -97,5 +103,3 @@ export interface AgentEdge {
   target: string;
   type?: string;
 }
-
-

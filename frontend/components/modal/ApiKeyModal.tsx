@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 
 interface ApiKeyModalProps {
   isOpen: boolean;
@@ -8,20 +8,17 @@ interface ApiKeyModalProps {
 }
 
 export function ApiKeyModal({ isOpen, onSave }: ApiKeyModalProps) {
-  const [apiKey, setApiKey] = useState("");
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (isOpen) {
-      // Check if there's a stored key
+  const [apiKey, setApiKey] = useState(() => {
+    if (typeof window !== "undefined") {
       try {
-        const stored = localStorage.getItem("GEMINI_API_KEY");
-        if (stored) {
-          setApiKey(stored);
-        }
-      } catch {}
+        return localStorage.getItem("GEMINI_API_KEY") || "";
+      } catch {
+        return "";
+      }
     }
-  }, [isOpen]);
+    return "";
+  });
+  const [error, setError] = useState("");
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -41,7 +38,7 @@ export function ApiKeyModal({ isOpen, onSave }: ApiKeyModalProps) {
     try {
       localStorage.setItem("GEMINI_API_KEY", trimmedKey);
       onSave(trimmedKey);
-    } catch (err) {
+    } catch {
       setError("Failed to save API key. Please try again.");
     }
   };
@@ -116,4 +113,3 @@ export function ApiKeyModal({ isOpen, onSave }: ApiKeyModalProps) {
     </div>
   );
 }
-

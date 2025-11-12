@@ -6,6 +6,7 @@ from db.database import get_db_session
 from db.schemas import LinkModel, AgentModel, SessionModel
 from core.models import Link, LinkCreate
 from core.logging import get_logger
+from core.agent_tree_cache import get_agent_tree_cache
 
 logger = get_logger("links")
 router = APIRouter(prefix="/links", tags=["links"])
@@ -91,6 +92,7 @@ async def create_link(
     db.commit()
     
     logger.info("link_created", parent_id=link_data.parent_agent_id, child_id=link_data.child_agent_id, session_id=session_id)
+    get_agent_tree_cache().invalidate(session_id)
     return Link.model_validate(link)
 
 
@@ -123,5 +125,5 @@ async def delete_link(
     db.delete(link)
     db.commit()
     logger.info("link_deleted", parent_id=link_data.parent_agent_id, child_id=link_data.child_agent_id, session_id=session_id)
-
+    get_agent_tree_cache().invalidate(session_id)
 

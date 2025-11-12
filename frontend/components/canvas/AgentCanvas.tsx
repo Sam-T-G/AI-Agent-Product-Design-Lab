@@ -2,24 +2,24 @@
 
 import React, { useCallback, useMemo, useRef, useEffect } from "react";
 import ReactFlow, {
-	Node,
-	Edge,
-	Connection,
-	addEdge as rfAddEdge,
 	useNodesState,
 	useEdgesState,
 	Background,
 	Controls,
 	MiniMap,
-	NodeTypes,
 	Handle,
 	Position,
+} from "reactflow";
+import type {
+	Node,
+	Edge,
 	NodeChange,
 	EdgeChange,
+	NodeTypes,
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import { AgentNode, AgentEdge } from "@/lib/types";
+import type { AgentEdge } from "@/lib/types";
 import { useGraphStore } from "@/lib/store";
 
 // Custom Agent Node Component
@@ -90,25 +90,29 @@ export function AgentCanvas({
 	onNodePositionChange,
 	selectedNodeId,
 }: AgentCanvasProps) {
-	const {
-		nodes,
-		edges,
-		setNodes,
-		setEdges,
-		addNode,
-		addEdge,
-		removeNode,
-		removeEdge,
-		setSelectedNode,
-	} = useGraphStore();
+	const { nodes, edges, addEdge, removeNode, removeEdge, setSelectedNode } =
+		useGraphStore();
+	const addEdgeRef = useRef(addEdge);
+	const removeNodeRef = useRef(removeNode);
+	const removeEdgeRef = useRef(removeEdge);
+
+	useEffect(() => {
+		addEdgeRef.current = addEdge;
+	}, [addEdge]);
+
+	useEffect(() => {
+		removeNodeRef.current = removeNode;
+	}, [removeNode]);
+
+	useEffect(() => {
+		removeEdgeRef.current = removeEdge;
+	}, [removeEdge]);
 
 	// Track last saved positions and debounce timers to minimize DB writes
 	const lastSavedPositionsRef = useRef<Map<string, { x: number; y: number }>>(
 		new Map()
 	);
-	const positionUpdateTimersRef = useRef<Map<string, NodeJS.Timeout>>(
-		new Map()
-	);
+	const positionUpdateTimersRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
 	const hasInitializedPositionsRef = useRef(false);
 
 	// Initialize saved positions from loaded nodes to prevent unnecessary saves
@@ -252,9 +256,10 @@ export function AgentCanvas({
 
 	// Cleanup timers on unmount
 	useEffect(() => {
+		const timers = positionUpdateTimersRef.current;
 		return () => {
-			positionUpdateTimersRef.current.forEach((timer) => clearTimeout(timer));
-			positionUpdateTimersRef.current.clear();
+			timers.forEach((timer) => clearTimeout(timer));
+			timers.clear();
 		};
 	}, []);
 
@@ -296,7 +301,7 @@ export function AgentCanvas({
 						source: params.source,
 						target: params.target,
 					};
-					addEdge(newEdge);
+					addEdgeRef.current(newEdge);
 
 					// Update ReactFlow edges with explicit ID
 					setRfEdgesState((eds) => {
@@ -325,31 +330,31 @@ export function AgentCanvas({
 				}
 			}
 		},
-		[addEdge, setRfEdgesState, onConnect, edges]
+		[setRfEdgesState, onConnect, edges]
 	);
 
 	// Handle node deletion
 	const onNodesDelete = useCallback(
 		(deleted: Node[]) => {
 			deleted.forEach((node) => {
-				removeNode(node.id);
+				removeNodeRef.current(node.id);
 			});
 		},
-		[removeNode]
+		[]
 	);
 
 	// Handle edge deletion
 	const onEdgesDelete = useCallback(
 		(deleted: Edge[]) => {
 			deleted.forEach((edge) => {
-				removeEdge(edge.id);
+				removeEdgeRef.current(edge.id);
 				// Sync with backend to remove parent-child relationship
 				if (onDisconnect && edge.source && edge.target) {
 					onDisconnect(edge.source, edge.target);
 				}
 			});
 		},
-		[removeEdge, onDisconnect]
+		[onDisconnect]
 	);
 
 	return (
