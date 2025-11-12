@@ -103,3 +103,5 @@ export interface AgentEdge {
   target: string;
   type?: string;
 }
+
+export type AgentStatus = "idle" | "analyzing" | "executing" | "completed" | "error";

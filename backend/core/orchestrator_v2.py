@@ -41,6 +41,11 @@ class AgentExecutor:
         """
         self.mailbox.set_state(AgentState.ANALYZING)
         yield {
+            "type": "status",
+            "agent_id": self.agent.id,
+            "data": "analyzing"
+        }
+        yield {
             "type": "log",
             "agent_id": self.agent.id,
             "data": f"[{self.agent.name}] Analyzing task..."
@@ -103,6 +108,11 @@ class AgentExecutor:
                 "agent_id": self.agent.id,
                 "data": full_output
             }
+            yield {
+                "type": "status",
+                "agent_id": self.agent.id,
+                "data": "completed"
+            }
             
             yield {
                 "type": "log",
@@ -117,6 +127,11 @@ class AgentExecutor:
                 "type": "error",
                 "agent_id": self.agent.id,
                 "data": f"Error: {str(e)}"
+            }
+            yield {
+                "type": "status",
+                "agent_id": self.agent.id,
+                "data": "error"
             }
     
     def _agent_supports_images(self) -> bool:
@@ -337,6 +352,15 @@ class MessageBasedOrchestrator:
                 # Execute children RECURSIVELY (they can invoke their own children)
                 for child in selected_children:
                     yield {
+                        "type": "delegation",
+                        "agent_id": root_agent_id,
+                        "data": {
+                            "from": root_agent_id,
+                            "to": child.id,
+                            "label": f"{root_agent.name} delegating to {child.name}"
+                        },
+                    }
+                    yield {
                         "type": "log",
                         "agent_id": child.id,
                         "data": f"▶️  Starting {child.name}..."
@@ -466,6 +490,15 @@ Provide a synthesized, coherent response:"""
             }
             
             for child in children:
+                yield {
+                    "type": "delegation",
+                    "agent_id": agent.id,
+                    "data": {
+                        "from": agent.id,
+                        "to": child.id,
+                        "label": f"{agent.name} delegating to {child.name}"
+                    },
+                }
                 yield {
                     "type": "log",
                     "agent_id": child.id,

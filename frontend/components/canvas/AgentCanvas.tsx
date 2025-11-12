@@ -9,6 +9,7 @@ import ReactFlow, {
 	MiniMap,
 	Handle,
 	Position,
+	MarkerType,
 } from "reactflow";
 import type {
 	Node,
@@ -19,7 +20,7 @@ import type {
 } from "reactflow";
 import "reactflow/dist/style.css";
 
-import type { AgentEdge } from "@/lib/types";
+import type { AgentEdge, AgentStatus } from "@/lib/types";
 import { useGraphStore } from "@/lib/store";
 
 // Custom Agent Node Component
@@ -44,12 +45,21 @@ function AgentNodeComponent({
 }: {
 	data: { agent: { id?: string; name: string; role: string } };
 }) {
+	const status = useGraphStore(
+		(state) => state.agentStatuses[data.agent.id || ""] ?? "idle"
+	);
 	const colors = pastelFromId(data.agent.id || data.agent.name);
+	const styleMeta = statusStyles[status];
+	const borderColor = styleMeta?.border || colors.border;
 	return (
 		<div
-			className="rounded-lg shadow-lg p-4 min-w-[200px]"
-			style={{ background: colors.bg, border: `2px solid ${colors.border}` }}>
+			className="rounded-lg shadow-lg p-4 min-w-[200px] relative transition-colors"
+			style={{ background: colors.bg, border: `2px solid ${borderColor}` }}>
 			<Handle type="target" position={Position.Top} className="w-3 h-3" />
+			<div className="absolute top-2 right-2 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide">
+				<span className={`w-2 h-2 rounded-full ${styleMeta.dot}`} />
+				<span className={styleMeta.text}>{styleMeta.label}</span>
+			</div>
 			<div className="text-center">
 				<div className="font-semibold" style={{ color: colors.text }}>
 					{data.agent.name}
@@ -66,6 +76,39 @@ function AgentNodeComponent({
 // Define nodeTypes outside component to avoid React Flow warning
 const nodeTypes: NodeTypes = {
 	agent: AgentNodeComponent,
+};
+
+const statusStyles: Record<AgentStatus, { label: string; dot: string; text: string; border: string }> = {
+	idle: {
+		label: "Idle",
+		dot: "bg-gray-300",
+		text: "text-gray-500",
+		border: "#d1d5db",
+	},
+	analyzing: {
+		label: "Thinking",
+		dot: "bg-amber-400",
+		text: "text-amber-700",
+		border: "#fcd34d",
+	},
+	executing: {
+		label: "Running",
+		dot: "bg-blue-400",
+		text: "text-blue-700",
+		border: "#60a5fa",
+	},
+	completed: {
+		label: "Done",
+		dot: "bg-emerald-400",
+		text: "text-emerald-700",
+		border: "#4ade80",
+	},
+	error: {
+		label: "Error",
+		dot: "bg-red-500",
+		text: "text-red-700",
+		border: "#f87171",
+	},
 };
 
 interface AgentCanvasProps {
@@ -92,6 +135,9 @@ export function AgentCanvas({
 }: AgentCanvasProps) {
 	const { nodes, edges, addEdge, removeNode, removeEdge, setSelectedNode } =
 		useGraphStore();
+	const delegationHighlights = useGraphStore(
+		(state) => state.delegationHighlights
+	);
 	const addEdgeRef = useRef(addEdge);
 	const removeNodeRef = useRef(removeNode);
 	const removeEdgeRef = useRef(removeEdge);
@@ -138,20 +184,32 @@ export function AgentCanvas({
 	);
 
 	const rfEdges: Edge[] = useMemo(() => {
-		// Deduplicate edges by ID to prevent React key conflicts
 		const edgeMap = new Map<string, Edge>();
 		edges.forEach((e) => {
 			if (!edgeMap.has(e.id)) {
+				const key = `${e.source}-${e.target}`;
+				const highlighted = Boolean(delegationHighlights[key]);
 				edgeMap.set(e.id, {
 					id: e.id,
 					source: e.source,
 					target: e.target,
-					type: e.type,
+					type: "smoothstep",
+					style: {
+						stroke: highlighted ? "#f97316" : "#94a3b8",
+						strokeWidth: highlighted ? 3 : 1.5,
+					},
+					markerEnd: {
+						type: MarkerType.ArrowClosed,
+						color: highlighted ? "#f97316" : "#94a3b8",
+						width: 18,
+						height: 18,
+					},
+					animated: highlighted,
 				});
 			}
 		});
 		return Array.from(edgeMap.values());
-	}, [edges]);
+	}, [edges, delegationHighlights]);
 
 	const [rfNodesState, setRfNodesState, onNodesChange] = useNodesState(rfNodes);
 	const [rfEdgesState, setRfEdgesState, onEdgesChange] = useEdgesState(rfEdges);

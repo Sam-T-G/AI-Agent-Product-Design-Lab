@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import Image from "next/image";
 import { createRun, streamRun } from "@/lib/api";
 import { useGraphStore } from "@/lib/store";
+import { AgentStatus } from "@/lib/types";
 import { AgentChat, ChatMessage } from "./AgentChat";
 
 interface ChatInterfaceProps {
@@ -14,7 +15,11 @@ interface ChatInterfaceProps {
 export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	// Use agentId if provided, otherwise fallback to rootAgentId
 	const activeAgentId = agentId || rootAgentId;
-	const { nodes } = useGraphStore();
+	const nodes = useGraphStore((state) => state.nodes);
+	const setAgentStatus = useGraphStore((state) => state.setAgentStatus);
+	const recordDelegation = useGraphStore((state) => state.recordDelegation);
+	const clearDelegation = useGraphStore((state) => state.clearDelegation);
+
 	const [isRunning, setIsRunning] = useState(false);
 	const [error, setError] = useState<string | null>(null);
 	const [input, setInput] = useState<string>("");
@@ -28,10 +33,44 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 	const inputRef = useRef<HTMLTextAreaElement>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 	const currentStreamingMessageIdRef = useRef<string | null>(null);
-	const conversationHistoryRef = useRef<string[]>([]); // Track conversation for context
-	const messageIdCounterRef = useRef(0); // Unique counter for message IDs
-	const finalizedAgentsRef = useRef<Set<string>>(new Set()); // Track finalized agents to prevent duplicates
+const conversationHistoryRef = useRef<string[]>([]); // Track conversation for context
+const messageIdCounterRef = useRef(0); // Unique counter for message IDs
+const finalizedAgentsRef = useRef<Set<string>>(new Set()); // Track finalized agents to prevent duplicates
 	const accumulatedOutputByAgentRef = useRef<Map<string, string>>(new Map()); // Track accumulated output per agent
+
+	const agentStatuses: AgentStatus[] = [
+		"idle",
+		"analyzing",
+		"executing",
+		"completed",
+		"error",
+	];
+
+	const isAgentStatus = (value: unknown): value is AgentStatus =>
+		typeof value === "string" && agentStatuses.includes(value as AgentStatus);
+
+	const DELEGATION_HIGHLIGHT_MS = 2500;
+
+	const resolveAgentName = useCallback(
+		(id: string | undefined) =>
+			id ? nodes.find((n) => n.id === id)?.data.agent.name || "Agent" : "Agent",
+		[nodes]
+	);
+
+	const appendInternalMessage = useCallback(
+		(content: string) => {
+			setChatMessages((prev) => [
+				...prev,
+				{
+					id: `internal-${Date.now()}-${prev.length}`,
+					type: "internal",
+					content,
+					timestamp: new Date(),
+				},
+			]);
+		},
+		[]
+	);
 
 	// Auto-scroll to bottom when messages change
 	useEffect(() => {
@@ -56,8 +95,7 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 					return updated;
 				} else {
 					// Create new streaming message
-					const agentName =
-						nodes.find((n) => n.id === agentId)?.data.agent.name || "Agent";
+					const agentName = resolveAgentName(agentId);
 					return [
 						...prev,
 						{
@@ -73,7 +111,7 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 			});
 			currentStreamingMessageIdRef.current = `agent-${agentId}-streaming`;
 		},
-		[nodes]
+		[resolveAgentName]
 	);
 
 	// Handle final output - convert streaming message to final message
@@ -111,20 +149,19 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 					return filtered; // Don't add duplicate
 				}
 
-				const agentName =
-					nodes.find((n) => n.id === agentId)?.data.agent.name || "Agent";
+			const agentName = resolveAgentName(agentId);
 
-				return [
-					...filtered,
-					{
-						id: finalId,
-						type: "agent",
-						agentId: agentId,
-						agentName: agentName,
-						content: fullOutput,
-						timestamp: new Date(),
-					},
-				];
+			return [
+				...filtered,
+				{
+					id: finalId,
+					type: "agent",
+					agentId: agentId,
+					agentName: agentName,
+					content: fullOutput,
+					timestamp: new Date(),
+				},
+			];
 			});
 
 			// Clear streaming message ref if this was the active one
@@ -139,7 +176,7 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 				conversationHistoryRef.current.push(fullOutput);
 			}
 		},
-		[nodes]
+		[resolveAgentName]
 	);
 
 	const handleSend = async () => {
@@ -268,9 +305,9 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 						dataLength: typeof event.data === "string" ? event.data.length : 0,
 					});
 
-					if (event.type === "output_chunk") {
-						const chunk =
-							(typeof event.data === "string" ? event.data : "") || "";
+				if (event.type === "output_chunk") {
+					const chunk =
+						(typeof event.data === "string" ? event.data : "") || "";
 						const agentId = event.agent_id || activeAgentId;
 
 						// Accumulate per agent
@@ -292,13 +329,12 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 						if (finalOutput.trim()) {
 							handleFinalOutput(agentId, finalOutput);
 						}
-					} else if (event.type === "status") {
-						console.log("📊 [CHAT] Status event", {
-							status: event.data,
-							agentId: event.agent_id,
-						});
-						if (event.data === "completed") {
-							// On completion, only finalize if we haven't received an "output" event yet
+				} else if (event.type === "status") {
+					if (event.agent_id && isAgentStatus(event.data)) {
+						setAgentStatus(event.agent_id, event.data);
+					}
+					if (event.data === "completed") {
+						// On completion, only finalize if we haven't received an "output" event yet
 							// Check if we have accumulated output for the active agent that hasn't been finalized
 							const activeAgentAccumulated =
 								accumulatedOutputByAgentRef.current.get(activeAgentId) || "";
@@ -314,7 +350,24 @@ export function ChatInterface({ agentId, rootAgentId }: ChatInterfaceProps) {
 							}
 							setIsRunning(false);
 						}
-					} else if (event.type === "error") {
+				} else if (event.type === "delegation") {
+					const payload = (event.data || {}) as {
+						from?: string;
+						to?: string;
+						label?: string;
+					};
+					if (payload.from && payload.to) {
+						recordDelegation(payload.from, payload.to);
+						setTimeout(() => {
+							clearDelegation(payload.from!, payload.to!);
+						}, DELEGATION_HIGHLIGHT_MS);
+						const fromName = resolveAgentName(payload.from);
+						const toName = resolveAgentName(payload.to);
+						appendInternalMessage(
+							payload.label || `${fromName} → ${toName}`
+						);
+					}
+				} else if (event.type === "error") {
 						const errorMsg =
 							(typeof event.data === "string" ? event.data : "Unknown error") ||
 							"Unknown error";

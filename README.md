@@ -51,8 +51,14 @@ Visit http://localhost:3000 and select/create a session. After selecting a sessi
 backend/   FastAPI app, SQLAlchemy models, orchestrator, requirements
 frontend/  Next.js client, React Flow canvas, chat UI, Zustand stores
 scripts/   Utility shell scripts (deployment/test helpers)
-docs/      Fresh documentation starting point
+docs/      Reference docs (setup-guide.md, architecture.md, deployment.md, README.md)
 ```
+
+## Documentation
+- [`docs/setup-guide.md`](docs/setup-guide.md) – end-to-end local setup without Docker
+- [`docs/architecture.md`](docs/architecture.md) – current backend/frontend/data flow overview
+- [`docs/deployment.md`](docs/deployment.md) – notes for hosting the split services
+- [`docs/README.md`](docs/README.md) – roadmap for future doc additions
 
 ## Development notes
 - The backend expects a clean database schema when it boots (`Base.metadata.create_all`). Delete `backend/agents.db` if you need a reset.

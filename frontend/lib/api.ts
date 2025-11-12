@@ -297,6 +297,14 @@ export function streamRun(
 		}
 	});
 
+	eventSource.addEventListener("delegation", (e: MessageEvent) => {
+		try {
+			onEvent(JSON.parse(e.data));
+		} catch (err) {
+			console.warn("Failed to parse delegation event", err);
+		}
+	});
+
 	eventSource.addEventListener("error", (e: MessageEvent) => {
 		try {
 			onEvent(JSON.parse(e.data));

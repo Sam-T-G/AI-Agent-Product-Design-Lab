@@ -1,12 +1,14 @@
 /** Zustand store with Immer for state management. */
 import { create } from "zustand";
 import { immer } from "zustand/middleware/immer";
-import { AgentNode, AgentEdge } from "./types";
+import { AgentNode, AgentEdge, AgentStatus } from "./types";
 
 interface GraphSlice {
 	nodes: AgentNode[];
 	edges: AgentEdge[];
 	selectedNodeId: string | null;
+	agentStatuses: Record<string, AgentStatus>;
+	delegationHighlights: Record<string, number>;
 	setNodes: (nodes: AgentNode[]) => void;
 	setEdges: (edges: AgentEdge[]) => void;
 	addNode: (node: AgentNode) => void;
@@ -15,6 +17,9 @@ interface GraphSlice {
 	addEdge: (edge: AgentEdge) => void;
 	removeEdge: (edgeId: string) => void;
 	setSelectedNode: (nodeId: string | null) => void;
+	setAgentStatus: (agentId: string, status: AgentStatus) => void;
+	recordDelegation: (fromId: string, toId: string) => void;
+	clearDelegation: (fromId: string, toId: string) => void;
 }
 
 interface RunSlice {
@@ -27,6 +32,8 @@ export const useGraphStore = create<GraphSlice>()(
 		nodes: [],
 		edges: [],
 		selectedNodeId: null,
+		agentStatuses: {},
+		delegationHighlights: {},
 		setNodes: (nodes) => set({ nodes }),
 		setEdges: (edges) => set({ edges }),
 		addNode: (node) =>
@@ -64,6 +71,18 @@ export const useGraphStore = create<GraphSlice>()(
 				state.edges = state.edges.filter((e) => e.id !== edgeId);
 			}),
 		setSelectedNode: (nodeId) => set({ selectedNodeId: nodeId }),
+		setAgentStatus: (agentId, status) =>
+			set((state) => {
+				state.agentStatuses[agentId] = status;
+			}),
+		recordDelegation: (fromId, toId) =>
+			set((state) => {
+				state.delegationHighlights[`${fromId}-${toId}`] = Date.now();
+			}),
+		clearDelegation: (fromId, toId) =>
+			set((state) => {
+				delete state.delegationHighlights[`${fromId}-${toId}`];
+			}),
 	}))
 );
 
